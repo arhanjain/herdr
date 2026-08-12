@@ -2920,6 +2920,26 @@ split_horizontal = 'prefix+\'
     }
 
     #[test]
+    fn prefix_binding_maps_to_sidebar_nav() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+sidebar_nav = "prefix+a"
+"#,
+        )
+        .unwrap();
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds = config.keybinds();
+
+        let action = action_for_key(
+            &state,
+            TerminalKey::new(KeyCode::Char('a'), KeyModifiers::empty()),
+            BindingDispatch::Prefix,
+        );
+        assert_eq!(action, Some(NavigateAction::SidebarNav));
+    }
+
+    #[test]
     fn prefix_tab_override_can_map_to_last_pane() {
         let config: Config = toml::from_str(
             r#"

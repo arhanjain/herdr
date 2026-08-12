@@ -1872,6 +1872,15 @@ fn render_unified_tree(
                 );
             }
         }
+        // Bright accent bar down the left edge so the keyboard cursor is obvious.
+        if is_cursor {
+            let buf = frame.buffer_mut();
+            for y in rect.y..(rect.y + rect.height).min(list_bottom.saturating_add(1)) {
+                let cell = &mut buf[(rect.x, y)];
+                cell.set_symbol("▌");
+                cell.set_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD));
+            }
+        }
     }
 
     if let Some(track) = scrollbar_rect {
