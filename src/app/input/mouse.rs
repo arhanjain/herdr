@@ -546,6 +546,43 @@ impl AppState {
                         return Some(MouseAction::NewWorkspace);
                     }
 
+                    if crate::ui::unified_tree_active(self) {
+                        let cards = if self.view.workspace_card_areas.is_empty() {
+                            crate::ui::compute_workspace_card_areas(self, self.view.sidebar_rect)
+                        } else {
+                            self.view.workspace_card_areas.clone()
+                        };
+                        // Chevron on a workspace row toggles its agent children.
+                        if let Some(card) = cards.iter().find(|card| {
+                            let chevron = crate::ui::workspace_group_chevron_rect(card);
+                            mouse.row == chevron.y && mouse.column == chevron.x && chevron.width > 0
+                        }) {
+                            if crate::ui::workspace_has_agents(self, card.ws_idx) {
+                                if let Some(ws) = self.workspaces.get(card.ws_idx) {
+                                    let id = ws.id.clone();
+                                    if !self.collapsed_agent_workspaces.remove(&id) {
+                                        self.collapsed_agent_workspaces.insert(id);
+                                    }
+                                    self.mark_session_dirty();
+                                }
+                                return None;
+                            }
+                        }
+                        // Agent leaf click focuses that pane.
+                        if let Some((ws_idx, _tab_idx, pane_id)) =
+                            self.unified_agent_target_at(mouse.row)
+                        {
+                            self.mode = Mode::Terminal;
+                            return Some(MouseAction::FocusPane { ws_idx, pane_id });
+                        }
+                        // Workspace row click focuses it (drag-reorder disabled in unified mode).
+                        if let Some(idx) = self.workspace_at_row(mouse.row) {
+                            self.mode = Mode::Terminal;
+                            return Some(MouseAction::FocusWorkspace { ws_idx: idx });
+                        }
+                        return None;
+                    }
+
                     if let Some(target) =
                         self.workspace_list_scrollbar_target_at(mouse.column, mouse.row)
                     {
@@ -965,6 +1002,10 @@ impl AppState {
             }
 
             MouseEventKind::ScrollUp if in_sidebar => {
+                if crate::ui::unified_tree_active(self) {
+                    self.scroll_unified_tree(-1);
+                    return None;
+                }
                 let agent_area = self.agent_panel_rect();
                 let over_agent_panel = agent_area != Rect::default()
                     && mouse.row >= agent_area.y
@@ -984,6 +1025,10 @@ impl AppState {
                 }
             }
             MouseEventKind::ScrollDown if in_sidebar => {
+                if crate::ui::unified_tree_active(self) {
+                    self.scroll_unified_tree(1);
+                    return None;
+                }
                 let agent_area = self.agent_panel_rect();
                 let over_agent_panel = agent_area != Rect::default()
                     && mouse.row >= agent_area.y

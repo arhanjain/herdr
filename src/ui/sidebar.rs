@@ -542,23 +542,65 @@ pub(crate) fn agent_panel_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
     Rect::new(area.x, body_y, body_width, body_height)
 }
 
+/// Whether the agents panel should render as a workspace-nested tree.
+/// Tree layout only makes sense when entries are grouped by space.
+pub(crate) fn agent_tree_active(app: &AppState) -> bool {
+    app.agent_panel_tree && matches!(app.agent_panel_sort, AgentPanelSort::Spaces)
+}
+
+/// True when `index` begins a new workspace group in tree mode (and therefore
+/// gets a workspace header row drawn above it).
+fn agent_entry_starts_space_group(
+    app: &AppState,
+    entries: &[AgentPanelEntry],
+    index: usize,
+) -> bool {
+    if !agent_tree_active(app) {
+        return false;
+    }
+    match (
+        entries.get(index),
+        index.checked_sub(1).and_then(|i| entries.get(i)),
+    ) {
+        (Some(current), Some(previous)) => current.ws_idx != previous.ws_idx,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// True when `index` is the last entry within its workspace group. Used to pick
+/// the `└─` vs `├─` connector glyph. Only meaningful in tree mode.
+fn agent_entry_is_last_in_space_group(entries: &[AgentPanelEntry], index: usize) -> bool {
+    match (entries.get(index), entries.get(index.saturating_add(1))) {
+        (Some(current), Some(next)) => current.ws_idx != next.ws_idx,
+        (Some(_), None) => true,
+        _ => true,
+    }
+}
+
 fn resolved_agent_rows(app: &AppState, entry: &AgentPanelEntry) -> Vec<Vec<ResolvedToken>> {
     let label = entry
         .state_labels
         .get(agent_panel_status_key(entry.state, entry.seen))
         .map(String::as_str)
         .unwrap_or_else(|| state_label(entry.state, entry.seen));
-    tokens::agent_rows(&app.sidebar_agents, entry, label)
+    tokens::agent_rows(&app.sidebar_agents, entry, label, agent_tree_active(app))
 }
 
 pub(crate) fn agent_entry_height_in_body(
     app: &AppState,
-    entry: &AgentPanelEntry,
+    entries: &[AgentPanelEntry],
+    index: usize,
     body_height: u16,
 ) -> u16 {
+    let Some(entry) = entries.get(index) else {
+        return 0;
+    };
+    let header = u16::from(agent_entry_starts_space_group(app, entries, index));
     (resolved_agent_rows(app, entry)
         .len()
         .max(1)
+        .saturating_add(header as usize)
         .min(u16::MAX as usize) as u16)
         .min(body_height)
 }
@@ -580,8 +622,8 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
     let mut used_rows = 0u16;
     let mut visible = 0usize;
     let entries = agent_panel_entries(app);
-    for (index, entry) in entries.iter().enumerate().skip(scroll) {
-        let height = agent_entry_height_in_body(app, entry, body.height);
+    for index in scroll..entries.len() {
+        let height = agent_entry_height_in_body(app, &entries, index, body.height);
         if used_rows.saturating_add(height) > body.height {
             break;
         }
@@ -599,9 +641,10 @@ fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let entries = agent_panel_entries(app);
     let mut used_rows = 0u16;
     let mut start = entries.len();
-    for (index, entry) in entries.iter().enumerate().rev() {
+    for index in (0..entries.len()).rev() {
         let gap = agent_entry_gap(app, index, entries.len());
-        let needed = agent_entry_height_in_body(app, entry, body.height).saturating_add(gap);
+        let needed =
+            agent_entry_height_in_body(app, &entries, index, body.height).saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
@@ -722,6 +765,189 @@ pub(crate) fn workspace_group_chevron_rect(card: &crate::app::state::WorkspaceCa
         1,
         1,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Unified sidebar tree (workspaces + their agents in one full-height list).
+// Enabled by `sidebar_unified_tree`. Agents render as single leaf rows.
+// ---------------------------------------------------------------------------
+
+const UNIFIED_HEADER_ROWS: u16 = 1;
+
+use crate::app::state::{UnifiedRowArea, UnifiedRowKind};
+
+/// The full sidebar area used by the unified tree, minus the 1-col right separator.
+pub(crate) fn unified_tree_rect(area: Rect) -> Rect {
+    Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height)
+}
+
+pub(crate) fn unified_tree_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
+    let area = unified_tree_rect(area);
+    if area.width == 0 || area.height <= UNIFIED_HEADER_ROWS + 1 {
+        return Rect::default();
+    }
+    let body_y = area.y.saturating_add(UNIFIED_HEADER_ROWS);
+    let footer_y = area.y + area.height.saturating_sub(1);
+    let body_height = footer_y.saturating_sub(body_y);
+    let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
+    Rect::new(area.x, body_y, body_width, body_height)
+}
+
+/// True when the unified tree is active for this state.
+pub(crate) fn unified_tree_active(app: &AppState) -> bool {
+    app.sidebar_unified_tree && !app.sidebar_collapsed
+}
+
+/// Whether a workspace has its agent children hidden in the unified tree.
+pub(crate) fn workspace_agents_collapsed(app: &AppState, ws_idx: usize) -> bool {
+    app.workspaces
+        .get(ws_idx)
+        .is_some_and(|ws| app.collapsed_agent_workspaces.contains(&ws.id))
+}
+
+/// The ordered rows of the unified tree: each workspace (always expanded across
+/// worktrees) followed by its agents, unless that workspace is agent-collapsed.
+pub(crate) fn unified_tree_entries(app: &AppState) -> Vec<UnifiedRowKind> {
+    let ws_entries = workspace_list_entries_expanded(app);
+    let agents = agent_panel_entries(app);
+    let mut out = Vec::new();
+    for entry in &ws_entries {
+        let WorkspaceListEntry::Workspace { ws_idx, indented } = entry;
+        out.push(UnifiedRowKind::Workspace {
+            ws_idx: *ws_idx,
+            indented: *indented,
+        });
+        if workspace_agents_collapsed(app, *ws_idx) {
+            continue;
+        }
+        for agent in agents.iter().filter(|a| a.ws_idx == *ws_idx) {
+            out.push(UnifiedRowKind::Agent {
+                ws_idx: *ws_idx,
+                tab_idx: agent.tab_idx,
+                pane_id: agent.pane_id,
+            });
+        }
+    }
+    out
+}
+
+/// Whether a workspace has any agent rows following it (controls chevron display).
+pub(crate) fn workspace_has_agents(app: &AppState, ws_idx: usize) -> bool {
+    agent_panel_entries(app).iter().any(|a| a.ws_idx == ws_idx)
+}
+
+fn unified_row_height(app: &AppState, kind: &UnifiedRowKind, body_height: u16) -> u16 {
+    match kind {
+        UnifiedRowKind::Workspace { ws_idx, indented } => app
+            .workspaces
+            .get(*ws_idx)
+            .map(|ws| workspace_row_height_in_body(app, ws, *indented, body_height))
+            .unwrap_or(0),
+        // Agents always render as a single leaf line.
+        UnifiedRowKind::Agent { .. } => body_height.min(1),
+    }
+}
+
+fn unified_tree_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
+    let body = unified_tree_body_rect(area, false);
+    if body.width == 0 || body.height == 0 {
+        return 0;
+    }
+    let entries = unified_tree_entries(app);
+    let mut used = 0u16;
+    let mut visible = 0usize;
+    for kind in entries.iter().skip(scroll) {
+        let h = unified_row_height(app, kind, body.height);
+        if used.saturating_add(h) > body.height {
+            break;
+        }
+        used = used.saturating_add(h);
+        visible += 1;
+    }
+    visible
+}
+
+fn unified_tree_bottom_start(app: &AppState, area: Rect) -> usize {
+    let body = unified_tree_body_rect(area, false);
+    let entries = unified_tree_entries(app);
+    let mut used = 0u16;
+    let mut start = entries.len();
+    for idx in (0..entries.len()).rev() {
+        let h = unified_row_height(app, &entries[idx], body.height);
+        if used.saturating_add(h) > body.height {
+            break;
+        }
+        used = used.saturating_add(h);
+        start = idx;
+    }
+    start.min(entries.len().saturating_sub(1))
+}
+
+pub(crate) fn unified_tree_scroll_metrics(
+    app: &AppState,
+    area: Rect,
+) -> crate::pane::ScrollMetrics {
+    let max_scroll = unified_tree_bottom_start(app, area);
+    let scroll = app.workspace_scroll.min(max_scroll);
+    let viewport_rows = unified_tree_visible_count(app, area, scroll);
+    crate::pane::ScrollMetrics {
+        offset_from_bottom: max_scroll.saturating_sub(scroll),
+        max_offset_from_bottom: max_scroll,
+        viewport_rows,
+    }
+}
+
+pub(crate) fn unified_tree_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
+    let metrics = unified_tree_scroll_metrics(app, area);
+    let body = unified_tree_body_rect(area, true);
+    let content = unified_tree_rect(area);
+    (should_show_scrollbar(metrics) && body.width > 0 && body.height > 0).then_some(Rect::new(
+        content.x + content.width.saturating_sub(1),
+        body.y,
+        1,
+        body.height,
+    ))
+}
+
+pub(crate) fn normalized_unified_tree_scroll(
+    app: &AppState,
+    area: Rect,
+    requested: usize,
+) -> usize {
+    if unified_tree_entries(app).is_empty() {
+        0
+    } else {
+        requested.min(unified_tree_bottom_start(app, area))
+    }
+}
+
+/// Lay out the unified tree rows into rects for the current scroll position.
+pub(crate) fn compute_unified_rows(app: &AppState, area: Rect) -> Vec<UnifiedRowArea> {
+    let metrics = unified_tree_scroll_metrics(app, area);
+    let body = unified_tree_body_rect(area, should_show_scrollbar(metrics));
+    if body.width == 0 || body.height == 0 {
+        return Vec::new();
+    }
+    let entries = unified_tree_entries(app);
+    let scroll = app.workspace_scroll.min(metrics.max_offset_from_bottom);
+    let mut row_y = body.y;
+    let body_bottom = body.y + body.height;
+    let mut rows = Vec::new();
+    for kind in entries.into_iter().skip(scroll) {
+        let h = unified_row_height(app, &kind, body.height);
+        if h == 0 {
+            continue;
+        }
+        if row_y.saturating_add(h) > body_bottom {
+            break;
+        }
+        rows.push(UnifiedRowArea {
+            rect: Rect::new(body.x, row_y, body.width, h),
+            kind,
+        });
+        row_y = row_y.saturating_add(h).min(body_bottom);
+    }
+    rows
 }
 
 /// Auto-scale sidebar width based on workspace identity + agent summary.
@@ -993,10 +1219,13 @@ pub(super) fn render_sidebar(
         buf[(sep_x, y)].set_style(sep_style);
     }
 
-    let (ws_area, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
-
-    render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
-    render_agent_detail(app, terminal_runtimes, frame, detail_area);
+    if unified_tree_active(app) {
+        render_unified_tree(app, terminal_runtimes, frame, area, is_navigating);
+    } else {
+        let (ws_area, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+        render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
+        render_agent_detail(app, terminal_runtimes, frame, detail_area);
+    }
     render_sidebar_toggle(app, frame, area, false, p);
 }
 
@@ -1420,6 +1649,231 @@ fn render_workspace_list(
     }
 }
 
+fn render_unified_tree(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+    area: Rect,
+    is_navigating: bool,
+) {
+    let p = &app.palette;
+    let content = unified_tree_rect(area);
+    let list_bottom = content.y + content.height.saturating_sub(1);
+
+    // Header.
+    if content.height > 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                " workspaces",
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+            )])),
+            Rect::new(content.x, content.y, content.width, 1),
+        );
+    }
+
+    let metrics = unified_tree_scroll_metrics(app, area);
+    let scrollbar_rect = unified_tree_scrollbar_rect(app, area);
+    let rows = &app.view.unified_rows;
+    let agents = agent_panel_entries(app);
+
+    for (idx, row) in rows.iter().enumerate() {
+        let rect = row.rect;
+        if rect.y >= list_bottom.saturating_add(1) {
+            break;
+        }
+        match row.kind {
+            UnifiedRowKind::Workspace { ws_idx, indented } => {
+                let Some(ws) = app.workspaces.get(ws_idx) else {
+                    continue;
+                };
+                let selected = ws_idx == app.selected && is_navigating;
+                let is_active = Some(ws_idx) == app.active;
+                let highlighted = selected || is_active;
+                let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
+
+                if highlighted {
+                    let bg = if selected { p.surface0 } else { p.surface_dim };
+                    let buf = frame.buffer_mut();
+                    for y in rect.y..(rect.y + rect.height).min(list_bottom) {
+                        for x in rect.x..rect.x + rect.width {
+                            buf[(x, y)].set_style(Style::default().bg(bg));
+                        }
+                    }
+                }
+
+                let name_style = if highlighted {
+                    Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
+                };
+                let label = ws.display_name_from(&app.terminals, terminal_runtimes);
+                let display_label = if indented {
+                    grouped_child_display_label(
+                        &label,
+                        ws.branch().as_deref(),
+                        ws.custom_name.is_some(),
+                    )
+                } else {
+                    label
+                };
+                let state_icon = state_icon(agg_state, agg_seen, app.status_indicators, p);
+                let state_text_style = Style::default()
+                    .fg(state_label_color(agg_state, agg_seen, p))
+                    .add_modifier(Modifier::DIM);
+                let branch_style =
+                    Style::default().fg(if highlighted { p.mauve } else { p.overlay0 });
+                let token_values = ws.metadata_tokens.values();
+                let space_rows = tokens::space_rows(
+                    &app.sidebar_spaces,
+                    SpaceTokenContext {
+                        workspace: &display_label,
+                        branch: ws.branch().as_deref(),
+                        state_text: state_label(agg_state, agg_seen),
+                        ahead_behind: ws.git_ahead_behind(),
+                        tokens: &token_values,
+                        suppress_git_details: indented,
+                    },
+                );
+                let has_agents = workspace_has_agents(app, ws_idx);
+                let trailing = if has_agents { 2 } else { 0 };
+                for (row_index, resolved) in space_rows.iter().enumerate() {
+                    if row_index as u16 >= rect.height || rect.y + row_index as u16 >= list_bottom {
+                        break;
+                    }
+                    let mut spans = Vec::new();
+                    let prefix_width = if indented {
+                        spans.push(Span::raw("   "));
+                        if row_index == 0 {
+                            spans.push(Span::styled("├─ ", Style::default().fg(p.overlay0)));
+                            6
+                        } else {
+                            spans.push(Span::styled("│", Style::default().fg(p.overlay0)));
+                            spans.push(Span::raw("    "));
+                            8
+                        }
+                    } else if row_index == 0 {
+                        spans.push(Span::raw(" "));
+                        1
+                    } else {
+                        spans.push(Span::raw("   "));
+                        3
+                    };
+                    spans.extend(resolved_token_spans(
+                        resolved,
+                        state_icon,
+                        state_text_style,
+                        name_style,
+                        branch_style,
+                        branch_style,
+                        p,
+                        rect.width.saturating_sub(prefix_width + trailing) as usize,
+                    ));
+                    frame.render_widget(
+                        Paragraph::new(Line::from(spans)),
+                        Rect::new(rect.x, rect.y + row_index as u16, rect.width, 1),
+                    );
+                }
+                // Chevron toggles this workspace's agent children.
+                if has_agents {
+                    let collapsed = workspace_agents_collapsed(app, ws_idx);
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(
+                            if collapsed { "▸" } else { "▾" },
+                            Style::default().fg(p.accent),
+                        )),
+                        Rect::new(rect.x + rect.width.saturating_sub(1), rect.y, 1, 1),
+                    );
+                }
+            }
+            UnifiedRowKind::Agent {
+                ws_idx,
+                tab_idx,
+                pane_id,
+            } => {
+                if rect.y >= list_bottom {
+                    continue;
+                }
+                let entry = agents
+                    .iter()
+                    .find(|a| a.ws_idx == ws_idx && a.tab_idx == tab_idx && a.pane_id == pane_id);
+                let Some(entry) = entry else { continue };
+                let is_last = !matches!(
+                    rows.get(idx + 1).map(|r| r.kind),
+                    Some(UnifiedRowKind::Agent { ws_idx: next_ws, .. }) if next_ws == ws_idx
+                );
+                let is_active = app.is_active_pane(ws_idx, tab_idx, pane_id);
+                let label_color = state_label_color(entry.state, entry.seen, p);
+                if is_active {
+                    let buf = frame.buffer_mut();
+                    for x in rect.x..rect.x + rect.width {
+                        buf[(x, rect.y)].set_style(Style::default().bg(p.surface_dim));
+                    }
+                }
+                let (icon_symbol, icon_style) =
+                    state_icon(entry.state, entry.seen, app.status_indicators, p);
+                let name_style = if is_active {
+                    Style::default().fg(p.text)
+                } else {
+                    Style::default().fg(p.subtext0)
+                };
+                let mut spans = vec![
+                    Span::raw("   "),
+                    Span::styled(
+                        if is_last { "└─ " } else { "├─ " },
+                        Style::default().fg(p.overlay0),
+                    ),
+                    Span::styled(icon_symbol, icon_style),
+                    Span::raw(" "),
+                ];
+                if let Some(tab) = entry.primary_tab_label.as_deref() {
+                    spans.push(Span::styled(
+                        tab.to_string(),
+                        Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
+                    ));
+                    spans.push(Span::styled(" · ", Style::default().fg(p.overlay0)));
+                }
+                let label = entry
+                    .agent_label
+                    .clone()
+                    .or_else(|| entry.terminal_title_stripped.clone())
+                    .unwrap_or_else(|| state_label(entry.state, entry.seen).to_string());
+                let _ = label_color;
+                spans.push(Span::styled(label, name_style));
+                frame.render_widget(
+                    Paragraph::new(Line::from(spans)),
+                    Rect::new(rect.x, rect.y, rect.width, 1),
+                );
+            }
+        }
+    }
+
+    if let Some(track) = scrollbar_rect {
+        render_scrollbar(frame, metrics, track, p.surface_dim, p.overlay0, "▕");
+    }
+
+    if app.mouse_capture && list_bottom > content.y {
+        frame.render_widget(
+            Paragraph::new(Span::styled(" new", Style::default().fg(p.overlay0))),
+            app.sidebar_new_button_rect(),
+        );
+        let menu_line = if app.global_menu_attention_badge_visible() {
+            Line::from(vec![
+                Span::styled(
+                    "● ",
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("menu", Style::default().fg(p.overlay0)),
+            ])
+        } else {
+            Line::from(vec![Span::styled("menu", Style::default().fg(p.overlay0))])
+        };
+        frame.render_widget(
+            Paragraph::new(menu_line).alignment(Alignment::Right),
+            app.global_launcher_rect(),
+        );
+    }
+}
+
 fn render_agent_detail(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -1483,12 +1937,28 @@ fn render_agent_detail(
     let scroll = app.agent_panel_scroll.min(metrics.max_offset_from_bottom);
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
+    let tree = agent_tree_active(app);
     for (index, detail) in details.iter().enumerate().skip(scroll) {
         let label_color = state_label_color(detail.state, detail.seen, p);
         let rows = resolved_agent_rows(app, detail);
-        let height = (rows.len().max(1) as u16).min(body.height);
+        let starts_group = agent_entry_starts_space_group(app, &details, index);
+        let is_last_child = tree && agent_entry_is_last_in_space_group(&details, index);
+        let header = u16::from(starts_group);
+        let height = agent_entry_height_in_body(app, &details, index, body.height);
         if row_y.saturating_add(height) > body_bottom {
             break;
+        }
+
+        // In tree mode, draw the workspace header that this group nests under.
+        if starts_group {
+            let header_style = Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD);
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(detail.primary_label.clone(), header_style),
+                ])),
+                Rect::new(body.x, row_y, body.width, 1),
+            );
         }
 
         let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
@@ -1510,8 +1980,30 @@ fn render_agent_detail(
         let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
         let state_icon = state_icon(detail.state, detail.seen, app.status_indicators, p);
 
-        for (row_index, resolved) in rows.iter().take(height as usize).enumerate() {
-            let mut spans = vec![Span::raw(if row_index == 0 { " " } else { "   " })];
+        let agent_row_budget = height.saturating_sub(header) as usize;
+        for (row_index, resolved) in rows.iter().take(agent_row_budget).enumerate() {
+            let (mut spans, prefix_width) = if tree {
+                let mut spans = vec![Span::raw("   ")];
+                let width = if row_index == 0 {
+                    spans.push(Span::styled(
+                        if is_last_child { "└─ " } else { "├─ " },
+                        Style::default().fg(p.overlay0),
+                    ));
+                    6
+                } else if is_last_child {
+                    spans.push(Span::raw("     "));
+                    8
+                } else {
+                    spans.push(Span::styled("│", Style::default().fg(p.overlay0)));
+                    spans.push(Span::raw("    "));
+                    8
+                };
+                (spans, width)
+            } else if row_index == 0 {
+                (vec![Span::raw(" ")], 1)
+            } else {
+                (vec![Span::raw("   ")], 3)
+            };
             spans.extend(resolved_token_spans(
                 resolved,
                 state_icon,
@@ -1520,12 +2012,11 @@ fn render_agent_detail(
                 agent_style,
                 agent_style,
                 p,
-                body.width
-                    .saturating_sub(if row_index == 0 { 1 } else { 3 }) as usize,
+                body.width.saturating_sub(prefix_width) as usize,
             ));
             frame.render_widget(
                 Paragraph::new(Line::from(spans)).style(row_style),
-                Rect::new(body.x, row_y + row_index as u16, body.width, 1),
+                Rect::new(body.x, row_y + header + row_index as u16, body.width, 1),
             );
         }
         row_y = row_y
@@ -1867,6 +2358,148 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
+    fn tree_mode_renders_workspace_header_and_connector_glyphs() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("alpha"), Workspace::test_new("beta")];
+        app.ensure_test_terminals();
+        for (workspace, agent) in app.workspaces.iter().zip([Agent::Pi, Agent::Claude]) {
+            let pane_id = workspace.tabs[0].root_pane;
+            let terminal_id = workspace.tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(agent);
+        }
+        app.agent_panel_sort = AgentPanelSort::Spaces;
+        app.agent_panel_tree = true;
+
+        let area = Rect::new(0, 0, 24, 14);
+        let body = agent_panel_body_rect(area, false);
+        let mut terminal = Terminal::new(TestBackend::new(24, 14)).unwrap();
+        terminal
+            .draw(|frame| render_agent_detail(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let rows: Vec<String> = (0..body.height)
+            .map(|dy| row_text(buffer, body.y + dy, body.width))
+            .collect();
+        let joined = rows.join("\n");
+
+        // Both workspaces appear as parent header rows...
+        assert!(rows.iter().any(|row| row.trim() == "alpha"), "{joined}");
+        assert!(rows.iter().any(|row| row.trim() == "beta"), "{joined}");
+        // ...and their single agents nest beneath with a last-child connector.
+        assert!(
+            joined.contains("└─"),
+            "expected tree connector in:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn unified_tree_nests_agents_under_workspaces_and_collapses() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("alpha"), Workspace::test_new("beta")];
+        app.ensure_test_terminals();
+        for (workspace, agent) in app.workspaces.iter().zip([Agent::Pi, Agent::Claude]) {
+            let pane_id = workspace.tabs[0].root_pane;
+            let terminal_id = workspace.tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(agent);
+        }
+        app.sidebar_unified_tree = true;
+
+        let entries = unified_tree_entries(&app);
+        assert!(matches!(
+            entries[0],
+            UnifiedRowKind::Workspace { ws_idx: 0, .. }
+        ));
+        assert!(matches!(
+            entries[1],
+            UnifiedRowKind::Agent { ws_idx: 0, .. }
+        ));
+        assert!(matches!(
+            entries[2],
+            UnifiedRowKind::Workspace { ws_idx: 1, .. }
+        ));
+        assert!(matches!(
+            entries[3],
+            UnifiedRowKind::Agent { ws_idx: 1, .. }
+        ));
+
+        // Collapsing a workspace hides its agent children.
+        let id0 = app.workspaces[0].id.clone();
+        app.collapsed_agent_workspaces.insert(id0);
+        let entries = unified_tree_entries(&app);
+        assert_eq!(entries.len(), 3, "workspace 0's agent is hidden");
+        assert!(matches!(
+            entries[0],
+            UnifiedRowKind::Workspace { ws_idx: 0, .. }
+        ));
+        assert!(matches!(
+            entries[1],
+            UnifiedRowKind::Workspace { ws_idx: 1, .. }
+        ));
+        assert!(matches!(
+            entries[2],
+            UnifiedRowKind::Agent { ws_idx: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn unified_tree_renders_header_agents_and_lays_out_agent_rows() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("alpha")];
+        app.ensure_test_terminals();
+        let pane_id = app.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        app.sidebar_unified_tree = true;
+
+        let area = Rect::new(0, 0, 26, 20);
+        app.view.sidebar_rect = area;
+        app.view.unified_rows = compute_unified_rows(&app, area);
+
+        // The layout produced a workspace row and a nested agent leaf row.
+        assert!(app
+            .view
+            .unified_rows
+            .iter()
+            .any(|r| matches!(r.kind, UnifiedRowKind::Workspace { ws_idx: 0, .. })));
+        let agent_row = app
+            .view
+            .unified_rows
+            .iter()
+            .find(|r| matches!(r.kind, UnifiedRowKind::Agent { .. }))
+            .expect("agent leaf row laid out");
+        assert!(matches!(
+            agent_row.kind,
+            UnifiedRowKind::Agent {
+                ws_idx: 0,
+                pane_id: p,
+                ..
+            } if p == pane_id
+        ));
+
+        let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_unified_tree(&app, &TerminalRuntimeRegistry::new(), frame, area, false)
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (area.y..area.y + area.height)
+            .map(|y| row_text(buffer, y, area.width))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("workspaces"), "header:\n{text}");
+        assert!(text.contains("alpha"), "workspace row:\n{text}");
+        assert!(text.contains("└─"), "agent connector:\n{text}");
+    }
+
+    #[test]
     fn narrow_agent_rows_preserve_later_tab_tokens() {
         let mut app = crate::app::state::AppState::test_new();
         let mut workspace = Workspace::test_new("very-long-workspace-name");
@@ -2004,6 +2637,47 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
+    fn tree_mode_marks_group_boundaries_and_adds_header_rows() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.ensure_test_terminals();
+        for ws_idx in 0..2 {
+            let pane_id = app.workspaces[ws_idx].tabs[0].root_pane;
+            let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        }
+        app.agent_panel_sort = AgentPanelSort::Spaces;
+
+        let entries = agent_panel_entries(&app);
+        assert_eq!(entries.len(), 2, "one agent per workspace");
+        let body_height = 40;
+
+        // Tree off: no group headers, no extra rows.
+        app.agent_panel_tree = false;
+        assert!(!agent_entry_starts_space_group(&app, &entries, 0));
+        let flat_height = agent_entry_height_in_body(&app, &entries, 0, body_height);
+
+        // Tree on: each workspace begins its own group and gains one header row.
+        app.agent_panel_tree = true;
+        assert!(agent_entry_starts_space_group(&app, &entries, 0));
+        assert!(agent_entry_starts_space_group(&app, &entries, 1));
+        assert!(agent_entry_is_last_in_space_group(&entries, 0));
+        assert!(agent_entry_is_last_in_space_group(&entries, 1));
+        assert_eq!(
+            agent_entry_height_in_body(&app, &entries, 0, body_height),
+            flat_height + 1,
+            "group-start entry gains a workspace header row"
+        );
+
+        // Tree layout only applies to the spaces sort.
+        app.agent_panel_sort = AgentPanelSort::Priority;
+        assert!(!agent_tree_active(&app));
+        assert!(!agent_entry_starts_space_group(&app, &entries, 0));
+    }
+
+    #[test]
     fn oversized_agent_override_is_clipped_to_the_panel_body() {
         let mut app = crate::app::state::AppState::test_new();
         let workspace = Workspace::test_new("one");
@@ -2024,9 +2698,15 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         assert_eq!(metrics.viewport_rows, 1);
         assert_eq!(metrics.max_offset_from_bottom, 0);
-        let entry = agent_panel_entries(&app).pop().unwrap();
+        let entries = agent_panel_entries(&app);
+        let last = entries.len() - 1;
         assert_eq!(
-            agent_entry_height_in_body(&app, &entry, agent_panel_body_rect(panel, false).height),
+            agent_entry_height_in_body(
+                &app,
+                &entries,
+                last,
+                agent_panel_body_rect(panel, false).height
+            ),
             agent_panel_body_rect(panel, false).height
         );
     }

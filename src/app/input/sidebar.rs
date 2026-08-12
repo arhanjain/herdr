@@ -76,6 +76,40 @@ impl AppState {
         );
     }
 
+    /// Scroll the unified tree (reuses `workspace_scroll`, clamped to the tree).
+    pub(super) fn scroll_unified_tree(&mut self, delta: i16) {
+        let area = self.view.sidebar_rect;
+        if delta.is_negative() {
+            self.workspace_scroll = self
+                .workspace_scroll
+                .saturating_sub(delta.unsigned_abs() as usize);
+        } else {
+            self.workspace_scroll = self.workspace_scroll.saturating_add(delta as usize);
+        }
+        self.workspace_scroll =
+            crate::ui::normalized_unified_tree_scroll(self, area, self.workspace_scroll);
+    }
+
+    /// Map a screen row to an agent leaf in the unified tree, if any.
+    pub(super) fn unified_agent_target_at(
+        &self,
+        row: u16,
+    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+        self.view
+            .unified_rows
+            .iter()
+            .find_map(|area| match area.kind {
+                crate::app::state::UnifiedRowKind::Agent {
+                    ws_idx,
+                    tab_idx,
+                    pane_id,
+                } if row >= area.rect.y && row < area.rect.y + area.rect.height => {
+                    Some((ws_idx, tab_idx, pane_id))
+                }
+                _ => None,
+            })
+    }
+
     pub(super) fn scroll_workspace_list(&mut self, delta: i16) {
         if delta.is_negative() {
             self.workspace_scroll = self
@@ -505,7 +539,7 @@ impl AppState {
         let entries = crate::ui::agent_panel_entries(self);
         let scroll = self.agent_panel_scroll.min(metrics.max_offset_from_bottom);
         for (index, detail) in entries.iter().enumerate().skip(scroll) {
-            let height = crate::ui::agent_entry_height_in_body(self, detail, body.height);
+            let height = crate::ui::agent_entry_height_in_body(self, &entries, index, body.height);
             if row_y.saturating_add(height) > body_bottom {
                 break;
             }
