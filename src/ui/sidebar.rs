@@ -848,7 +848,7 @@ fn unified_row_height(app: &AppState, kind: &UnifiedRowKind, body_height: u16) -
     }
 }
 
-fn unified_tree_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
+pub(crate) fn unified_tree_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
     let body = unified_tree_body_rect(area, false);
     if body.width == 0 || body.height == 0 {
         return 0;
@@ -919,6 +919,22 @@ pub(crate) fn normalized_unified_tree_scroll(
     } else {
         requested.min(unified_tree_bottom_start(app, area))
     }
+}
+
+/// Scroll offset that keeps unified-tree entry `idx` within the visible window.
+pub(crate) fn unified_tree_scroll_for_cursor(app: &AppState, area: Rect, idx: usize) -> usize {
+    let scroll = app.workspace_scroll;
+    let target = if idx < scroll {
+        idx
+    } else {
+        let visible = unified_tree_visible_count(app, area, scroll);
+        if visible > 0 && idx >= scroll + visible {
+            idx + 1 - visible
+        } else {
+            scroll
+        }
+    };
+    normalized_unified_tree_scroll(app, area, target)
 }
 
 /// Lay out the unified tree rows into rects for the current scroll position.
@@ -1675,11 +1691,22 @@ fn render_unified_tree(
     let scrollbar_rect = unified_tree_scrollbar_rect(app, area);
     let rows = &app.view.unified_rows;
     let agents = agent_panel_entries(app);
+    let scroll = app.workspace_scroll.min(metrics.max_offset_from_bottom);
 
     for (idx, row) in rows.iter().enumerate() {
         let rect = row.rect;
         if rect.y >= list_bottom.saturating_add(1) {
             break;
+        }
+        // Keyboard-navigation cursor highlight (wins over active/selected bg).
+        let is_cursor = app.sidebar_nav_cursor == Some(scroll + idx);
+        if is_cursor {
+            let buf = frame.buffer_mut();
+            for y in rect.y..(rect.y + rect.height).min(list_bottom.saturating_add(1)) {
+                for x in rect.x..rect.x + rect.width {
+                    buf[(x, y)].set_style(Style::default().bg(p.surface1));
+                }
+            }
         }
         match row.kind {
             UnifiedRowKind::Workspace { ws_idx, indented } => {
@@ -1691,7 +1718,7 @@ fn render_unified_tree(
                 let highlighted = selected || is_active;
                 let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
 
-                if highlighted {
+                if highlighted && !is_cursor {
                     let bg = if selected { p.surface0 } else { p.surface_dim };
                     let buf = frame.buffer_mut();
                     for y in rect.y..(rect.y + rect.height).min(list_bottom) {
@@ -1803,7 +1830,7 @@ fn render_unified_tree(
                 );
                 let is_active = app.is_active_pane(ws_idx, tab_idx, pane_id);
                 let label_color = state_label_color(entry.state, entry.seen, p);
-                if is_active {
+                if is_active && !is_cursor {
                     let buf = frame.buffer_mut();
                     for x in rect.x..rect.x + rect.width {
                         buf[(x, rect.y)].set_style(Style::default().bg(p.surface_dim));
@@ -2444,6 +2471,35 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             entries[2],
             UnifiedRowKind::Agent { ws_idx: 1, .. }
         ));
+    }
+
+    #[test]
+    fn unified_tree_enter_sidebar_nav_engages_cursor() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("alpha")];
+        app.ensure_test_terminals();
+        let pane_id = app.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        app.active = Some(0);
+
+        // No-op unless the unified tree is active.
+        app.sidebar_unified_tree = false;
+        app.enter_sidebar_nav();
+        assert_eq!(app.sidebar_nav_cursor, None);
+
+        // Engages with an in-bounds cursor when the unified tree is on.
+        app.sidebar_unified_tree = true;
+        app.enter_sidebar_nav();
+        let entries = unified_tree_entries(&app);
+        let cursor = app.sidebar_nav_cursor.expect("cursor engaged");
+        assert!(
+            cursor < entries.len(),
+            "cursor {cursor} in 0..{}",
+            entries.len()
+        );
     }
 
     #[test]

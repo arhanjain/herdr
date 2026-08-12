@@ -82,10 +82,11 @@ pub(crate) use self::{
         collapsed_sidebar_toggle_rect, compute_unified_rows, compute_workspace_card_areas,
         expanded_sidebar_sections, expanded_sidebar_toggle_rect, normalized_unified_tree_scroll,
         normalized_workspace_scroll, sidebar_section_divider_rect, unified_tree_active,
-        workspace_drop_slots, workspace_group_chevron_rect, workspace_has_agents,
-        workspace_list_entries, workspace_list_entries_expanded, workspace_list_rect,
-        workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
-        AgentPanelEntry, WorkspaceListEntry,
+        unified_tree_entries, unified_tree_scroll_for_cursor, workspace_drop_slots,
+        workspace_group_chevron_rect, workspace_has_agents, workspace_list_entries,
+        workspace_list_entries_expanded, workspace_list_rect, workspace_list_scroll_metrics,
+        workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelEntry,
+        WorkspaceListEntry,
     },
 };
 

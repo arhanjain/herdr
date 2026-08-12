@@ -633,6 +633,7 @@ impl App {
             agent_panel_sort,
             agent_panel_tree: config.ui.agent_panel_tree,
             sidebar_unified_tree: config.ui.sidebar_unified_tree,
+            sidebar_nav_cursor: None,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),

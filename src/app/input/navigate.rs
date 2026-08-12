@@ -446,9 +446,77 @@ impl App {
             NavigateAction::OpenNavigator => {
                 self.state.open_navigator_from(&self.terminal_runtimes)
             }
+            NavigateAction::SidebarNav => {
+                self.state.enter_sidebar_nav();
+            }
         }
 
         finish_action_context(&mut self.state, context, previous_mode);
+    }
+
+    /// Handle a key while the unified-tree keyboard cursor is engaged:
+    /// j/k (or arrows) move, h/l collapse/expand a workspace, Enter focuses,
+    /// Esc (or any other key) exits.
+    pub(crate) fn handle_sidebar_nav_key(&mut self, raw_key: TerminalKey) {
+        use crate::app::state::UnifiedRowKind;
+        use crossterm::event::KeyCode;
+
+        let key = raw_key.as_key_event();
+        let entries = crate::ui::unified_tree_entries(&self.state);
+        if entries.is_empty() {
+            self.state.sidebar_nav_cursor = None;
+            return;
+        }
+        let len = entries.len();
+        let cursor = self.state.sidebar_nav_cursor.unwrap_or(0).min(len - 1);
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                let next = (cursor + 1).min(len - 1);
+                self.state.sidebar_nav_cursor = Some(next);
+                self.state.ensure_unified_row_visible(next);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let next = cursor.saturating_sub(1);
+                self.state.sidebar_nav_cursor = Some(next);
+                self.state.ensure_unified_row_visible(next);
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if let UnifiedRowKind::Workspace { ws_idx, .. } = entries[cursor] {
+                    if crate::ui::workspace_has_agents(&self.state, ws_idx) {
+                        if let Some(ws) = self.state.workspaces.get(ws_idx) {
+                            let id = ws.id.clone();
+                            self.state.collapsed_agent_workspaces.insert(id);
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if let UnifiedRowKind::Workspace { ws_idx, .. } = entries[cursor] {
+                    if let Some(ws) = self.state.workspaces.get(ws_idx) {
+                        let id = ws.id.clone();
+                        self.state.collapsed_agent_workspaces.remove(&id);
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let kind = entries[cursor];
+                self.state.sidebar_nav_cursor = None;
+                match kind {
+                    UnifiedRowKind::Agent {
+                        ws_idx, pane_id, ..
+                    } => self.focus_pane_internal_via_api(ws_idx, pane_id),
+                    UnifiedRowKind::Workspace { ws_idx, .. } => {
+                        self.focus_workspace_idx_via_api(ws_idx)
+                    }
+                }
+                self.state.mode = Mode::Terminal;
+            }
+            _ => {
+                // Esc or any unbound key exits sidebar navigation.
+                self.state.sidebar_nav_cursor = None;
+            }
+        }
     }
 
     pub(crate) fn focus_workspace_idx_via_api(&mut self, ws_idx: usize) {
@@ -1430,6 +1498,7 @@ pub(crate) enum NavigateAction {
     OpenNotificationTarget,
     Detach,
     OpenNavigator,
+    SidebarNav,
 }
 
 fn copy_mode_survives_prefix_action(action: NavigateAction) -> bool {
@@ -1559,6 +1628,7 @@ fn non_indexed_action_for_key(
         (&kb.swap_pane_up, NavigateAction::SwapPaneUp),
         (&kb.swap_pane_right, NavigateAction::SwapPaneRight),
         (&kb.last_pane, NavigateAction::LastPane),
+        (&kb.sidebar_nav, NavigateAction::SidebarNav),
         (&kb.cycle_pane_next, NavigateAction::CyclePaneNext),
         (&kb.cycle_pane_previous, NavigateAction::CyclePanePrevious),
         (&kb.split_vertical, NavigateAction::SplitVertical),
@@ -1858,6 +1928,7 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),
+        NavigateAction::SidebarNav => state.enter_sidebar_nav(),
     }
 
     finish_action_context(state, context, previous_mode);

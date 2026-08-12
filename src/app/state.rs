@@ -1444,6 +1444,9 @@ pub struct AppState {
     pub agent_panel_tree: bool,
     /// Merge the workspaces + agents panels into one full-height tree.
     pub sidebar_unified_tree: bool,
+    /// Active keyboard cursor into the unified tree (index into unified_tree
+    /// entries). Some(..) means sidebar keyboard navigation is engaged.
+    pub sidebar_nav_cursor: Option<usize>,
     pub status_indicators: crate::config::StatusIndicatorStyle,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
@@ -1819,6 +1822,7 @@ impl AppState {
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_panel_tree: false,
             sidebar_unified_tree: false,
+            sidebar_nav_cursor: None,
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),

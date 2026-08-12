@@ -110,6 +110,51 @@ impl AppState {
             })
     }
 
+    /// Engage keyboard navigation of the unified tree, placing the cursor on the
+    /// active pane's row (or the first row). No-op unless the unified tree is on.
+    pub(crate) fn enter_sidebar_nav(&mut self) {
+        if !crate::ui::unified_tree_active(self) {
+            return;
+        }
+        let entries = crate::ui::unified_tree_entries(self);
+        if entries.is_empty() {
+            return;
+        }
+        let start = self.active_unified_row_index(&entries).unwrap_or(0);
+        self.sidebar_nav_cursor = Some(start);
+        self.ensure_unified_row_visible(start);
+    }
+
+    fn active_unified_row_index(
+        &self,
+        entries: &[crate::app::state::UnifiedRowKind],
+    ) -> Option<usize> {
+        use crate::app::state::UnifiedRowKind;
+        if let Some(pos) = entries.iter().position(|kind| {
+            matches!(
+                kind,
+                UnifiedRowKind::Agent { ws_idx, tab_idx, pane_id }
+                    if self.is_active_pane(*ws_idx, *tab_idx, *pane_id)
+            )
+        }) {
+            return Some(pos);
+        }
+        if let Some(active) = self.active {
+            if let Some(pos) = entries.iter().position(|kind| {
+                matches!(kind, UnifiedRowKind::Workspace { ws_idx, .. } if *ws_idx == active)
+            }) {
+                return Some(pos);
+            }
+        }
+        Some(0)
+    }
+
+    /// Adjust the unified-tree scroll so cursor entry `idx` stays visible.
+    pub(crate) fn ensure_unified_row_visible(&mut self, idx: usize) {
+        let area = self.view.sidebar_rect;
+        self.workspace_scroll = crate::ui::unified_tree_scroll_for_cursor(self, area, idx);
+    }
+
     pub(super) fn scroll_workspace_list(&mut self, delta: i16) {
         if delta.is_negative() {
             self.workspace_scroll = self

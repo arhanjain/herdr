@@ -90,6 +90,12 @@ impl App {
             return None;
         }
 
+        // Unified-tree keyboard cursor intercepts all keys while engaged.
+        if self.state.sidebar_nav_cursor.is_some() {
+            self.handle_sidebar_nav_key(key);
+            return None;
+        }
+
         match self.state.mode {
             Mode::Terminal => return self.handle_terminal_key(key).await,
             Mode::Prefix => self.handle_prefix_key(key),
