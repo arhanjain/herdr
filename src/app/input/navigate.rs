@@ -463,59 +463,40 @@ impl App {
 
         let key = raw_key.as_key_event();
         let entries = crate::ui::unified_tree_entries(&self.state);
-        if entries.is_empty() {
+        let Some(cursor) = self.state.sidebar_nav_cursor.filter(|c| *c < entries.len()) else {
             self.state.sidebar_nav_cursor = None;
             return;
-        }
-        let len = entries.len();
-        let cursor = self.state.sidebar_nav_cursor.unwrap_or(0).min(len - 1);
+        };
 
         match key.code {
+            // j/k (and arrows) hop between agent rows only, skipping workspaces.
             KeyCode::Char('j') | KeyCode::Down => {
-                let next = (cursor + 1).min(len - 1);
-                self.state.sidebar_nav_cursor = Some(next);
-                self.state.ensure_unified_row_visible(next);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                let next = cursor.saturating_sub(1);
-                self.state.sidebar_nav_cursor = Some(next);
-                self.state.ensure_unified_row_visible(next);
-            }
-            KeyCode::Char('h') | KeyCode::Left => {
-                if let UnifiedRowKind::Workspace { ws_idx, .. } = entries[cursor] {
-                    if crate::ui::workspace_has_agents(&self.state, ws_idx) {
-                        if let Some(ws) = self.state.workspaces.get(ws_idx) {
-                            let id = ws.id.clone();
-                            self.state.collapsed_agent_workspaces.insert(id);
-                        }
-                    }
+                if let Some(next) = adjacent_agent_index(&entries, cursor, true) {
+                    self.state.sidebar_nav_cursor = Some(next);
+                    self.state.ensure_unified_row_visible(next);
                 }
             }
-            KeyCode::Char('l') | KeyCode::Right => {
-                if let UnifiedRowKind::Workspace { ws_idx, .. } = entries[cursor] {
-                    if let Some(ws) = self.state.workspaces.get(ws_idx) {
-                        let id = ws.id.clone();
-                        self.state.collapsed_agent_workspaces.remove(&id);
-                    }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(prev) = adjacent_agent_index(&entries, cursor, false) {
+                    self.state.sidebar_nav_cursor = Some(prev);
+                    self.state.ensure_unified_row_visible(prev);
                 }
             }
             KeyCode::Enter => {
-                let kind = entries[cursor];
-                self.state.sidebar_nav_cursor = None;
-                match kind {
-                    UnifiedRowKind::Agent {
-                        ws_idx, pane_id, ..
-                    } => self.focus_pane_internal_via_api(ws_idx, pane_id),
-                    UnifiedRowKind::Workspace { ws_idx, .. } => {
-                        self.focus_workspace_idx_via_api(ws_idx)
-                    }
+                if let UnifiedRowKind::Agent {
+                    ws_idx, pane_id, ..
+                } = entries[cursor]
+                {
+                    self.state.sidebar_nav_cursor = None;
+                    self.focus_pane_internal_via_api(ws_idx, pane_id);
+                    self.state.mode = Mode::Terminal;
                 }
-                self.state.mode = Mode::Terminal;
             }
-            _ => {
-                // Esc or any unbound key exits sidebar navigation.
+            KeyCode::Esc => {
                 self.state.sidebar_nav_cursor = None;
             }
+            // Other keys are ignored so the cursor stays engaged until Esc/Enter.
+            _ => {}
         }
     }
 
@@ -2001,6 +1982,22 @@ fn move_active_tab_relative(state: &mut AppState, delta: isize) {
 fn leave_navigate_mode(state: &mut AppState) {
     if state.active.is_some() {
         state.mode = Mode::Terminal;
+    }
+}
+
+/// Next/previous unified-tree entry index that is an agent row, skipping
+/// workspace rows. Returns None when there is no agent in that direction.
+fn adjacent_agent_index(
+    entries: &[crate::app::state::UnifiedRowKind],
+    cursor: usize,
+    forward: bool,
+) -> Option<usize> {
+    use crate::app::state::UnifiedRowKind;
+    let is_agent = |i: usize| matches!(entries.get(i), Some(UnifiedRowKind::Agent { .. }));
+    if forward {
+        (cursor + 1..entries.len()).find(|&i| is_agent(i))
+    } else {
+        (0..cursor).rev().find(|&i| is_agent(i))
     }
 }
 

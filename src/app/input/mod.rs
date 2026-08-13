@@ -899,13 +899,24 @@ fn sidebar_nav_cursor_moves_with_jk_and_enter_clears_it() {
     app.state.active = Some(0);
     app.state.sidebar_unified_tree = true;
 
+    let is_agent_row = |app: &App, idx: usize| {
+        matches!(
+            crate::ui::unified_tree_entries(&app.state).get(idx),
+            Some(crate::app::state::UnifiedRowKind::Agent { .. })
+        )
+    };
+
     app.state.enter_sidebar_nav();
     let start = app
         .state
         .sidebar_nav_cursor
         .expect("cursor engaged in unified mode");
+    assert!(
+        is_agent_row(&app, start),
+        "cursor must start on an agent row"
+    );
 
-    // j keeps the cursor engaged and moves it downward (never past the end).
+    // j keeps the cursor engaged, moves it downward, and lands on another agent.
     app.handle_sidebar_nav_key(TerminalKey::new(
         crossterm::event::KeyCode::Char('j'),
         crossterm::event::KeyModifiers::empty(),
@@ -914,7 +925,8 @@ fn sidebar_nav_cursor_moves_with_jk_and_enter_clears_it() {
         .state
         .sidebar_nav_cursor
         .expect("cursor still engaged after j");
-    assert!(moved >= start);
+    assert!(moved > start, "j advanced to the next agent");
+    assert!(is_agent_row(&app, moved), "cursor stays on agent rows only");
 
     // Enter commits the selection and disengages the cursor.
     app.handle_sidebar_nav_key(TerminalKey::new(

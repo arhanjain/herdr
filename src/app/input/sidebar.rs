@@ -117,36 +117,35 @@ impl AppState {
             return;
         }
         let entries = crate::ui::unified_tree_entries(self);
-        if entries.is_empty() {
+        // The cursor lands only on agents; if there are none, do not engage.
+        let Some(start) = self.active_agent_row_index(&entries) else {
             return;
-        }
-        let start = self.active_unified_row_index(&entries).unwrap_or(0);
+        };
         self.sidebar_nav_cursor = Some(start);
         self.ensure_unified_row_visible(start);
     }
 
-    fn active_unified_row_index(
+    /// Index of the agent row to start on: the active pane's agent if present,
+    /// otherwise the first agent. Returns None when there are no agent rows.
+    fn active_agent_row_index(
         &self,
         entries: &[crate::app::state::UnifiedRowKind],
     ) -> Option<usize> {
         use crate::app::state::UnifiedRowKind;
-        if let Some(pos) = entries.iter().position(|kind| {
-            matches!(
-                kind,
-                UnifiedRowKind::Agent { ws_idx, tab_idx, pane_id }
-                    if self.is_active_pane(*ws_idx, *tab_idx, *pane_id)
-            )
-        }) {
-            return Some(pos);
-        }
-        if let Some(active) = self.active {
-            if let Some(pos) = entries.iter().position(|kind| {
-                matches!(kind, UnifiedRowKind::Workspace { ws_idx, .. } if *ws_idx == active)
-            }) {
-                return Some(pos);
-            }
-        }
-        Some(0)
+        entries
+            .iter()
+            .position(|kind| {
+                matches!(
+                    kind,
+                    UnifiedRowKind::Agent { ws_idx, tab_idx, pane_id }
+                        if self.is_active_pane(*ws_idx, *tab_idx, *pane_id)
+                )
+            })
+            .or_else(|| {
+                entries
+                    .iter()
+                    .position(|kind| matches!(kind, UnifiedRowKind::Agent { .. }))
+            })
     }
 
     /// Adjust the unified-tree scroll so cursor entry `idx` stays visible.
