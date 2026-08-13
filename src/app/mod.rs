@@ -1767,6 +1767,12 @@ impl App {
                     let key = self.input_leases.normalize_press(&lease_key, key);
                     match key.kind {
                         crossterm::event::KeyEventKind::Press => {
+                            // The unified-tree keyboard cursor intercepts input
+                            // before it reaches the focused pane or mode dispatch.
+                            if self.state.sidebar_nav_cursor.is_some() {
+                                self.handle_sidebar_nav_key(key.clone());
+                                continue;
+                            }
                             let initial_context = self.terminal_input_context();
                             let target = if initial_context.is_some() {
                                 self.handle_terminal_key_headless_from(source_id, key.clone())

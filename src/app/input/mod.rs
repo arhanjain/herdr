@@ -877,6 +877,54 @@ fn root_layout_ratio(snapshot: &crate::persist::SessionSnapshot) -> Option<f32> 
 }
 
 #[cfg(test)]
+#[test]
+fn sidebar_nav_cursor_moves_with_jk_and_enter_clears_it() {
+    let mut app = app_for_mouse_test();
+    app.state.workspaces = vec![
+        crate::workspace::Workspace::test_new("alpha"),
+        crate::workspace::Workspace::test_new("beta"),
+    ];
+    app.state.ensure_test_terminals();
+    for ws_idx in 0..2 {
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .detected_agent = Some(crate::detect::Agent::Claude);
+    }
+    app.state.active = Some(0);
+    app.state.sidebar_unified_tree = true;
+
+    app.state.enter_sidebar_nav();
+    let start = app
+        .state
+        .sidebar_nav_cursor
+        .expect("cursor engaged in unified mode");
+
+    // j keeps the cursor engaged and moves it downward (never past the end).
+    app.handle_sidebar_nav_key(TerminalKey::new(
+        crossterm::event::KeyCode::Char('j'),
+        crossterm::event::KeyModifiers::empty(),
+    ));
+    let moved = app
+        .state
+        .sidebar_nav_cursor
+        .expect("cursor still engaged after j");
+    assert!(moved >= start);
+
+    // Enter commits the selection and disengages the cursor.
+    app.handle_sidebar_nav_key(TerminalKey::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::empty(),
+    ));
+    assert_eq!(app.state.sidebar_nav_cursor, None);
+}
+
+#[cfg(test)]
 fn unique_temp_path(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
