@@ -1449,6 +1449,9 @@ pub struct AppState {
     /// Active keyboard cursor into the unified tree (index into unified_tree
     /// entries). Some(..) means sidebar keyboard navigation is engaged.
     pub sidebar_nav_cursor: Option<usize>,
+    /// Pane focused when sidebar nav was entered, restored on Esc so live
+    /// preview-on-move can be cancelled. (workspace index, internal pane id)
+    pub sidebar_nav_return: Option<(usize, PaneId)>,
     pub status_indicators: crate::config::StatusIndicatorStyle,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
@@ -1826,6 +1829,7 @@ impl AppState {
             sidebar_unified_tree: false,
             keyboard_report_all_keys: false,
             sidebar_nav_cursor: None,
+            sidebar_nav_return: None,
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),

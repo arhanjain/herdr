@@ -635,6 +635,7 @@ impl App {
             sidebar_unified_tree: config.ui.sidebar_unified_tree,
             keyboard_report_all_keys: config.ui.keyboard_report_all_keys,
             sidebar_nav_cursor: None,
+            sidebar_nav_return: None,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),

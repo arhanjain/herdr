@@ -121,6 +121,13 @@ impl AppState {
         let Some(start) = self.active_agent_row_index(&entries) else {
             return;
         };
+        // Remember the current focus so Esc can cancel the live preview.
+        self.sidebar_nav_return = self.active.and_then(|ws_idx| {
+            self.workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.focused_pane_id())
+                .map(|pane_id| (ws_idx, pane_id))
+        });
         self.sidebar_nav_cursor = Some(start);
         self.ensure_unified_row_visible(start);
     }

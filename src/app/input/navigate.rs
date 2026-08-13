@@ -469,34 +469,53 @@ impl App {
         };
 
         match key.code {
-            // j/k (and arrows) hop between agent rows only, skipping workspaces.
+            // j/k (and arrows) hop between agent rows only, skipping workspaces,
+            // and live-preview each one by focusing its pane as it's highlighted.
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(next) = adjacent_agent_index(&entries, cursor, true) {
                     self.state.sidebar_nav_cursor = Some(next);
                     self.state.ensure_unified_row_visible(next);
+                    self.preview_agent_row(&entries, next);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(prev) = adjacent_agent_index(&entries, cursor, false) {
                     self.state.sidebar_nav_cursor = Some(prev);
                     self.state.ensure_unified_row_visible(prev);
+                    self.preview_agent_row(&entries, prev);
                 }
             }
             KeyCode::Enter => {
+                // Commit: keep the previewed pane, drop the return target.
                 if let UnifiedRowKind::Agent {
                     ws_idx, pane_id, ..
                 } = entries[cursor]
                 {
-                    self.state.sidebar_nav_cursor = None;
                     self.focus_pane_internal_via_api(ws_idx, pane_id);
-                    self.state.mode = Mode::Terminal;
                 }
+                self.state.sidebar_nav_cursor = None;
+                self.state.sidebar_nav_return = None;
+                self.state.mode = Mode::Terminal;
             }
             KeyCode::Esc => {
+                // Cancel: restore the pane focused before nav began.
+                if let Some((ws_idx, pane_id)) = self.state.sidebar_nav_return.take() {
+                    self.focus_pane_internal_via_api(ws_idx, pane_id);
+                }
                 self.state.sidebar_nav_cursor = None;
             }
             // Other keys are ignored so the cursor stays engaged until Esc/Enter.
             _ => {}
+        }
+    }
+
+    /// Focus the pane for the agent at `idx` (live preview during sidebar nav).
+    fn preview_agent_row(&mut self, entries: &[crate::app::state::UnifiedRowKind], idx: usize) {
+        if let Some(crate::app::state::UnifiedRowKind::Agent {
+            ws_idx, pane_id, ..
+        }) = entries.get(idx)
+        {
+            self.focus_pane_internal_via_api(*ws_idx, *pane_id);
         }
     }
 
