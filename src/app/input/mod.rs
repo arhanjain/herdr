@@ -938,6 +938,23 @@ fn sidebar_nav_cursor_moves_with_jk_and_enter_clears_it() {
 
 #[cfg(test)]
 #[test]
+fn left_click_cancels_engaged_sidebar_nav() {
+    let mut app = app_for_mouse_test();
+    app.state.sidebar_nav_cursor = Some(0);
+    app.state.sidebar_nav_return = Some((0, crate::layout::PaneId::from_raw(1)));
+    let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+    let _ = app.state.handle_mouse(
+        &mut runtimes,
+        mouse(MouseEventKind::Down(MouseButton::Left), 0, 0),
+    );
+
+    assert_eq!(app.state.sidebar_nav_cursor, None);
+    assert_eq!(app.state.sidebar_nav_return, None);
+}
+
+#[cfg(test)]
+#[test]
 fn keyboard_report_all_keys_forces_host_reporting_in_terminal_mode() {
     let mut app = app_for_mouse_test();
     app.state.mode = Mode::Terminal;

@@ -103,6 +103,15 @@ impl AppState {
         terminal_runtimes: &mut TerminalRuntimeRegistry,
         mouse: MouseEvent,
     ) -> Option<MouseAction> {
+        // A left click cancels engaged sidebar keyboard nav so the click's own
+        // focus/mode wins (the clicked target takes over; no return-to-origin).
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && self.sidebar_nav_cursor.is_some()
+        {
+            self.sidebar_nav_cursor = None;
+            self.sidebar_nav_return = None;
+        }
+
         if self.mode == Mode::Onboarding {
             self.handle_onboarding_mouse(mouse);
             return None;
