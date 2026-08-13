@@ -1222,7 +1222,10 @@ pub(super) fn render_sidebar(
         .buffer_mut()
         .set_style(area, Style::default().bg(p.sidebar_bg));
     let is_navigating = matches!(app.mode, Mode::Navigate);
-    let sep_style = if is_navigating {
+    // The sidebar is "focused" for keyboard input during navigate mode or while
+    // the unified-tree agent cursor is engaged — accent the border for both.
+    let sidebar_focused = is_navigating || app.sidebar_nav_cursor.is_some();
+    let sep_style = if sidebar_focused {
         Style::default().fg(p.accent)
     } else {
         Style::default().fg(p.surface_dim)
@@ -1676,13 +1679,29 @@ fn render_unified_tree(
     let content = unified_tree_rect(area);
     let list_bottom = content.y + content.height.saturating_sub(1);
 
-    // Header.
+    // Header — accent + hint while the keyboard nav cursor is engaged.
     if content.height > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
+        let nav_active = app.sidebar_nav_cursor.is_some();
+        let (title, title_style) = if nav_active {
+            (
+                " workspaces",
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (
                 " workspaces",
                 Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-            )])),
+            )
+        };
+        let mut spans = vec![Span::styled(title, title_style)];
+        if nav_active {
+            spans.push(Span::styled(
+                "  j/k ↵ esc",
+                Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
             Rect::new(content.x, content.y, content.width, 1),
         );
     }
@@ -2562,6 +2581,43 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert!(text.contains("workspaces"), "header:\n{text}");
         assert!(text.contains("alpha"), "workspace row:\n{text}");
         assert!(text.contains("└─"), "agent connector:\n{text}");
+    }
+
+    #[test]
+    fn unified_tree_header_shows_nav_hint_when_cursor_engaged() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("alpha")];
+        app.ensure_test_terminals();
+        let pane_id = app.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        app.sidebar_unified_tree = true;
+
+        let area = Rect::new(0, 0, 26, 20);
+        app.view.sidebar_rect = area;
+        app.view.unified_rows = compute_unified_rows(&app, area);
+
+        let header_row = |app: &crate::app::state::AppState| {
+            let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_unified_tree(app, &TerminalRuntimeRegistry::new(), frame, area, false)
+                })
+                .unwrap();
+            row_text(terminal.backend().buffer(), area.y, area.width)
+        };
+
+        // Not engaged: plain header, no hint.
+        assert!(!header_row(&app).contains("j/k"));
+
+        // Engaged: the header advertises the keyboard controls.
+        app.sidebar_nav_cursor = Some(1);
+        assert!(
+            header_row(&app).contains("j/k"),
+            "expected nav hint in header"
+        );
     }
 
     #[test]

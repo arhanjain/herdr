@@ -493,6 +493,35 @@ pub fn render_with_runtime_registry(
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
         Mode::Terminal => {}
     }
+
+    // While the sidebar agent-nav cursor is engaged, dim the pane/tab area so it
+    // is obvious that focus is on the sidebar tree, not the terminal.
+    if app.sidebar_nav_cursor.is_some() && app.view.layout != ViewLayout::Mobile {
+        dim_rect(frame, terminal_area);
+        if tab_bar_area.height > 0 {
+            dim_rect(frame, tab_bar_area);
+        }
+    }
+}
+
+/// Apply a DIM modifier over every cell in `rect` (clamped to the frame),
+/// keeping symbols and colors so the content reads as "grayed out".
+fn dim_rect(frame: &mut Frame, rect: Rect) {
+    let bounds = frame.area();
+    let x_end = rect
+        .x
+        .saturating_add(rect.width)
+        .min(bounds.x + bounds.width);
+    let y_end = rect
+        .y
+        .saturating_add(rect.height)
+        .min(bounds.y + bounds.height);
+    let buf = frame.buffer_mut();
+    for y in rect.y..y_end {
+        for x in rect.x..x_end {
+            buf[(x, y)].set_style(Style::default().add_modifier(Modifier::DIM));
+        }
+    }
 }
 
 fn render_navigation_chrome(
