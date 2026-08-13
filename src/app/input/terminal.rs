@@ -265,6 +265,11 @@ impl App {
     }
 
     pub(crate) fn host_keyboard_report_all_requested(&self) -> bool {
+        // Opt-in: always disambiguate control keys (ctrl+h/j/l vs Backspace/Enter)
+        // so multiplexer bindings work while a pane is focused.
+        if self.state.keyboard_report_all_keys {
+            return true;
+        }
         if self.state.popup_pane.is_none()
             && matches!(self.state.mode, Mode::Prefix | Mode::Navigate)
         {

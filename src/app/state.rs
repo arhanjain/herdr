@@ -1444,6 +1444,8 @@ pub struct AppState {
     pub agent_panel_tree: bool,
     /// Merge the workspaces + agents panels into one full-height tree.
     pub sidebar_unified_tree: bool,
+    /// Force the host terminal to report all keys so control keys reach bindings.
+    pub keyboard_report_all_keys: bool,
     /// Active keyboard cursor into the unified tree (index into unified_tree
     /// entries). Some(..) means sidebar keyboard navigation is engaged.
     pub sidebar_nav_cursor: Option<usize>,
@@ -1822,6 +1824,7 @@ impl AppState {
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_panel_tree: false,
             sidebar_unified_tree: false,
+            keyboard_report_all_keys: false,
             sidebar_nav_cursor: None,
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,

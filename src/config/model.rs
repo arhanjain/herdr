@@ -909,6 +909,11 @@ pub struct UiConfig {
     /// tree: each workspace is a parent row with its agents nested beneath.
     /// Replaces the two stacked panels while enabled. Default: false.
     pub sidebar_unified_tree: bool,
+    /// Always ask the host terminal to report all keys (Kitty keyboard protocol)
+    /// so control keys like ctrl+h/j/l are disambiguated from Backspace/Enter and
+    /// can drive multiplexer bindings while a pane is focused. Requires a terminal
+    /// that supports the protocol (kitty, ghostty, wezterm, foot, …). Default: false.
+    pub keyboard_report_all_keys: bool,
     /// Retired setting that Herdr wrote before the workspace filter was removed.
     #[serde(rename = "agent_panel_scope")]
     _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
@@ -1130,6 +1135,7 @@ impl Default for UiConfig {
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             agent_panel_tree: false,
             sidebar_unified_tree: false,
+            keyboard_report_all_keys: false,
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),

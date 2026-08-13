@@ -937,6 +937,21 @@ fn sidebar_nav_cursor_moves_with_jk_and_enter_clears_it() {
 }
 
 #[cfg(test)]
+#[test]
+fn keyboard_report_all_keys_forces_host_reporting_in_terminal_mode() {
+    let mut app = app_for_mouse_test();
+    app.state.mode = Mode::Terminal;
+
+    // Off by default: with no focused runtime, terminal mode does not request it.
+    app.state.keyboard_report_all_keys = false;
+    assert!(!app.host_keyboard_report_all_requested());
+
+    // On: host reporting is forced regardless of mode/pane.
+    app.state.keyboard_report_all_keys = true;
+    assert!(app.host_keyboard_report_all_requested());
+}
+
+#[cfg(test)]
 fn unique_temp_path(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

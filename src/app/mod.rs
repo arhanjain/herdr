@@ -633,6 +633,7 @@ impl App {
             agent_panel_sort,
             agent_panel_tree: config.ui.agent_panel_tree,
             sidebar_unified_tree: config.ui.sidebar_unified_tree,
+            keyboard_report_all_keys: config.ui.keyboard_report_all_keys,
             sidebar_nav_cursor: None,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,
@@ -1507,6 +1508,7 @@ impl App {
                     agent_panel_sort_from_config(config.ui.agent_panel_sort);
                 self.state.agent_panel_tree = config.ui.agent_panel_tree;
                 self.state.sidebar_unified_tree = config.ui.sidebar_unified_tree;
+                self.state.keyboard_report_all_keys = config.ui.keyboard_report_all_keys;
                 self.state.status_indicators = config.ui.status_indicators;
                 self.state.sidebar_agents = config.ui.sidebar.agents.clone();
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
