@@ -363,6 +363,9 @@ fn setup_terminal_with_capabilities(
     crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let host_color_scheme_reports =
         should_enable_host_color_scheme_reports(enable_client_protocols);
+    // Only the interactive attach owns the keyboard, so only it claims the tag.
+    let host_user_var =
+        enable_client_protocols && crate::terminal_effects::host_supports_user_vars_from_env();
 
     if enable_client_protocols {
         if mouse_capture {
@@ -375,6 +378,13 @@ fn setup_terminal_with_capabilities(
             write_host_color_scheme_report_mode(&mut io::stdout(), true)?;
         }
         push_keyboard_enhancement_flags()?;
+        if host_user_var {
+            crate::terminal_effects::write_host_user_var(
+                &mut io::stdout(),
+                crate::terminal_effects::HOST_USER_VAR_ATTACHED,
+                Some("true"),
+            )?;
+        }
     } else {
         if should_query_host_terminal_theme() {
             write_host_color_scheme_report_mode(&mut io::stdout(), false)?;
@@ -421,6 +431,7 @@ fn setup_terminal_with_capabilities(
     Ok(TerminalGuard {
         reset_modify_other_keys: modify_other_keys_mode.is_some(),
         reset_host_color_scheme_reports: host_color_scheme_reports,
+        clear_host_user_var: host_user_var,
         #[cfg(windows)]
         restore_windows_input_mode: windows_virtual_terminal_input.restore_mode,
     })
@@ -434,6 +445,7 @@ fn should_enable_host_color_scheme_reports(enable_client_protocols: bool) -> boo
 struct TerminalGuard {
     reset_modify_other_keys: bool,
     reset_host_color_scheme_reports: bool,
+    clear_host_user_var: bool,
     #[cfg(windows)]
     restore_windows_input_mode: Option<u32>,
 }
@@ -454,10 +466,18 @@ fn write_host_color_scheme_report_mode(
 fn write_terminal_restore_postlude(
     writer: &mut impl io::Write,
     reset_host_color_scheme_reports: bool,
+    clear_host_user_var: bool,
 ) -> io::Result<()> {
     if reset_host_color_scheme_reports {
         writer.write_all(
             crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
+        )?;
+    }
+    if clear_host_user_var {
+        crate::terminal_effects::write_host_user_var(
+            writer,
+            crate::terminal_effects::HOST_USER_VAR_ATTACHED,
+            None,
         )?;
     }
     // Restore a visible cursor and reset DECSCUSR back to the terminal default.
@@ -581,6 +601,7 @@ fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
 fn restore_terminal_state(
     reset_modify_other_keys: bool,
     reset_host_color_scheme_reports: bool,
+    clear_host_user_var: bool,
     #[cfg(windows)] restore_windows_input_mode: Option<u32>,
 ) {
     let _ = clear_received_kitty_graphics(&mut io::stdout());
@@ -607,7 +628,11 @@ fn restore_terminal_state(
     }
 
     let _ = ratatui::try_restore();
-    let _ = write_terminal_restore_postlude(&mut io::stdout(), reset_host_color_scheme_reports);
+    let _ = write_terminal_restore_postlude(
+        &mut io::stdout(),
+        reset_host_color_scheme_reports,
+        clear_host_user_var,
+    );
 
     #[cfg(windows)]
     if windows_vti_input_backend_enabled() && windows_win32_input_mode_enabled() {
@@ -662,6 +687,7 @@ impl Drop for TerminalGuard {
         restore_terminal_state(
             self.reset_modify_other_keys,
             self.reset_host_color_scheme_reports,
+            self.clear_host_user_var,
             #[cfg(windows)]
             self.restore_windows_input_mode,
         );
@@ -1277,6 +1303,7 @@ fn run_client_with_mode(
     // Install a panic hook to restore the terminal on panic (same as monolithic).
     let panic_resets_modify_other_keys = terminal_guard.reset_modify_other_keys;
     let panic_resets_host_color_scheme_reports = terminal_guard.reset_host_color_scheme_reports;
+    let panic_clears_host_user_var = terminal_guard.clear_host_user_var;
     #[cfg(windows)]
     let panic_restore_windows_input_mode = terminal_guard.restore_windows_input_mode;
     let original_hook = std::panic::take_hook();
@@ -1284,6 +1311,7 @@ fn run_client_with_mode(
         restore_terminal_state(
             panic_resets_modify_other_keys,
             panic_resets_host_color_scheme_reports,
+            panic_clears_host_user_var,
             #[cfg(windows)]
             panic_restore_windows_input_mode,
         );
@@ -3061,19 +3089,30 @@ mod tests {
     #[test]
     fn terminal_restore_postlude_restores_visible_default_cursor() {
         let mut output = Vec::new();
-        write_terminal_restore_postlude(&mut output, false).unwrap();
+        write_terminal_restore_postlude(&mut output, false, false).unwrap();
         assert_eq!(output, b"\x1b[?25h\x1b[0 q");
     }
 
     #[test]
     fn terminal_restore_postlude_disables_color_scheme_reports_when_enabled() {
         let mut output = Vec::new();
-        write_terminal_restore_postlude(&mut output, true).unwrap();
+        write_terminal_restore_postlude(&mut output, true, false).unwrap();
 
         let mut expected = Vec::new();
         expected.extend_from_slice(
             crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
         );
+        expected.extend_from_slice(b"\x1b[?25h\x1b[0 q");
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn terminal_restore_postlude_clears_host_user_var_when_set() {
+        let mut output = Vec::new();
+        write_terminal_restore_postlude(&mut output, false, true).unwrap();
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"\x1b]1337;SetUserVar=IS_HERDR\x07");
         expected.extend_from_slice(b"\x1b[?25h\x1b[0 q");
         assert_eq!(output, expected);
     }

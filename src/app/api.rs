@@ -1033,6 +1033,7 @@ impl App {
             Method::WorkspaceClose(target) => {
                 return self.handle_workspace_close(request.id, target)
             }
+            Method::WorkspacePickerOpen(_) => return self.handle_workspace_picker_open(request.id),
             Method::WorktreeList(params) => return self.handle_worktree_list(request.id, params),
             Method::WorktreeCreate(params) => {
                 let _ = params;

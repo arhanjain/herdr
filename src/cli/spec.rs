@@ -220,6 +220,7 @@ fn workspace_command() -> Command {
                 .arg(option("ttl-ms", "N")),
         )
         .subcommand(id_command("close", "workspace_id", "Close a workspace"))
+        .subcommand(Command::new("picker").about("Focus the workspace picker"))
 }
 
 fn worktree_command() -> Command {

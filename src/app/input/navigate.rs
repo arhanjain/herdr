@@ -154,6 +154,24 @@ impl App {
             return;
         }
 
+        if let Some(direction) = navigate_chain_direction_for_key(&raw_key) {
+            match direction {
+                NavDirection::Up => self.state.move_selected_workspace_by_visible_delta(-1),
+                NavDirection::Down => self.state.move_selected_workspace_by_visible_delta(1),
+                NavDirection::Right => {
+                    if !self.state.workspaces.is_empty() {
+                        self.state.switch_workspace(self.state.selected);
+                        leave_navigate_mode(&mut self.state);
+                    }
+                }
+                // The picker is the far left of the chain, so there is nowhere
+                // further to go; consume the key instead of letting it reach a
+                // custom command that would bounce focus back to the panes.
+                NavDirection::Left => {}
+            }
+            return;
+        }
+
         if let Some(action) = navigate_reserved_action_for_key(&self.state, &raw_key) {
             self.execute_tui_navigate_action(action, ActionContext::Navigate);
             return;
@@ -455,11 +473,10 @@ impl App {
     }
 
     /// Handle a key while the unified-tree keyboard cursor is engaged:
-    /// j/k (or arrows) move, h/l collapse/expand a workspace, Enter focuses,
-    /// Esc (or any other key) exits.
+    /// j/k (or arrows, or their ctrl variants) move, Enter and ctrl+l focus,
+    /// Esc cancels, and every other key is ignored so the cursor stays engaged.
     pub(crate) fn handle_sidebar_nav_key(&mut self, raw_key: TerminalKey) {
-        use crate::app::state::UnifiedRowKind;
-        use crossterm::event::KeyCode;
+        use crossterm::event::{KeyCode, KeyModifiers};
 
         let key = raw_key.as_key_event();
         let entries = crate::ui::unified_tree_entries(&self.state);
@@ -485,17 +502,13 @@ impl App {
                     self.preview_agent_row(&entries, prev);
                 }
             }
-            KeyCode::Enter => {
-                // Commit: keep the previewed pane, drop the return target.
-                if let UnifiedRowKind::Agent {
-                    ws_idx, pane_id, ..
-                } = entries[cursor]
-                {
-                    self.focus_pane_internal_via_api(ws_idx, pane_id);
-                }
-                self.state.sidebar_nav_cursor = None;
-                self.state.sidebar_nav_return = None;
-                self.state.mode = Mode::Terminal;
+            KeyCode::Enter => self.commit_sidebar_nav(&entries, cursor),
+            // ctrl+l is the outer navigation chain stepping rightwards back out of
+            // the tree and into the panes, so it commits the previewed agent the
+            // same way Enter does. ctrl+h falls through and keeps the cursor
+            // engaged, because the tree is the far left end of that chain.
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.commit_sidebar_nav(&entries, cursor)
             }
             KeyCode::Esc => {
                 // Cancel: restore the pane focused before nav began.
@@ -507,6 +520,19 @@ impl App {
             // Other keys are ignored so the cursor stays engaged until Esc/Enter.
             _ => {}
         }
+    }
+
+    /// Commit sidebar nav: keep the previewed pane and drop the return target.
+    fn commit_sidebar_nav(&mut self, entries: &[crate::app::state::UnifiedRowKind], cursor: usize) {
+        if let Some(crate::app::state::UnifiedRowKind::Agent {
+            ws_idx, pane_id, ..
+        }) = entries.get(cursor)
+        {
+            self.focus_pane_internal_via_api(*ws_idx, *pane_id);
+        }
+        self.state.sidebar_nav_cursor = None;
+        self.state.sidebar_nav_return = None;
+        self.state.mode = Mode::Terminal;
     }
 
     /// Focus the pane for the agent at `idx` (live preview during sidebar nav).
@@ -1359,6 +1385,28 @@ pub(super) fn handle_navigate_reserved_key(state: &mut AppState, key: TerminalKe
     false
 }
 
+/// The outer `ctrl+hjkl` navigation chain, continued inside the workspace picker.
+///
+/// Custom commands dispatch in `ActionContext::Navigate` as well, so without
+/// reserving these keys the same binding that walked into the picker would
+/// immediately bounce focus back out to the panes.
+fn navigate_chain_direction_for_key(key: &TerminalKey) -> Option<NavDirection> {
+    [
+        ('h', NavDirection::Left),
+        ('j', NavDirection::Down),
+        ('k', NavDirection::Up),
+        ('l', NavDirection::Right),
+    ]
+    .into_iter()
+    .find_map(|(ch, direction)| {
+        crate::config::terminal_key_matches_combo(
+            key,
+            (KeyCode::Char(ch), crossterm::event::KeyModifiers::CONTROL),
+        )
+        .then_some(direction)
+    })
+}
+
 fn navigate_reserved_action_for_key(state: &AppState, key: &TerminalKey) -> Option<NavigateAction> {
     if let Some(c) = unmodified_digit_for_key(key) {
         return Some(NavigateAction::SwitchWorkspace(
@@ -2138,6 +2186,53 @@ mod tests {
         app.state.active = (!app.state.workspaces.is_empty()).then_some(0);
         app.state.selected = 0;
         app
+    }
+
+    // `ctrl+hjkl` is one navigation chain that runs from the outer terminal
+    // through the panes and ends at the workspace picker, so the picker has to
+    // answer those keys itself instead of leaving them unhandled.
+    #[test]
+    fn navigate_chain_keys_move_the_picker_selection() {
+        let mut app = app_with_test_workspaces(&["one", "two", "three"]);
+        app.state.mode = Mode::Navigate;
+        app.state.selected = 0;
+
+        app.handle_navigate_key(TerminalKey::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        assert_eq!(app.state.selected, 1);
+        assert_eq!(app.state.mode, Mode::Navigate);
+
+        app.handle_navigate_key(TerminalKey::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        assert_eq!(app.state.selected, 0);
+        assert_eq!(app.state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn navigate_chain_right_key_enters_the_selected_workspace() {
+        let mut app = app_with_test_workspaces(&["one", "two"]);
+        app.state.mode = Mode::Navigate;
+        app.state.selected = 1;
+        app.state.active = Some(0);
+
+        app.handle_navigate_key(TerminalKey::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+
+        assert_eq!(app.state.active, Some(1));
+        assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    // The picker is the far-left end of the chain, so `ctrl+h` must not leak to
+    // a fallback that would move focus somewhere else.
+    #[test]
+    fn navigate_chain_left_key_stays_in_the_picker() {
+        let mut app = app_with_test_workspaces(&["one", "two"]);
+        app.state.mode = Mode::Navigate;
+        app.state.selected = 1;
+        app.state.active = Some(0);
+
+        app.handle_navigate_key(TerminalKey::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+
+        assert_eq!(app.state.mode, Mode::Navigate);
+        assert_eq!(app.state.selected, 1);
+        assert_eq!(app.state.active, Some(0));
     }
 
     #[test]

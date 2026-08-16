@@ -4733,6 +4733,22 @@
         {
           "properties": {
             "method": {
+              "const": "workspace.picker_open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "worktree.list",
               "type": "string"
             },
