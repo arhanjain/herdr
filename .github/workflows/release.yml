@@ -1,9 +1,13 @@
 name: Release
 
+# Disabled on this fork (arhanjain/herdr): the upstream release pipeline depends
+# on secrets and infrastructure this fork does not have (RELEASE_DEPLOY_KEY,
+# KANGAL_GITHUB_TOKEN, Cloudflare deploy hook, website/docs publishing).
+# Tag-driven releases for this fork are handled by fork-release.yml instead.
+# Left as workflow_dispatch-only so it never runs automatically; re-enable the
+# tag trigger below if this repo ever becomes the canonical upstream again.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
