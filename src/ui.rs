@@ -79,9 +79,11 @@ pub(crate) use self::{
         agent_entry_gap, agent_entry_height_in_body, agent_panel_body_rect, agent_panel_entries,
         agent_panel_scroll_for_target, agent_panel_scroll_metrics, agent_panel_scrollbar_rect,
         agent_panel_toggle_rect, all_agent_panel_entries, collapsed_sidebar_sections,
-        collapsed_sidebar_toggle_rect, compute_workspace_card_areas, expanded_sidebar_sections,
-        expanded_sidebar_toggle_rect, normalized_workspace_scroll, sidebar_section_divider_rect,
-        workspace_drop_slots, workspace_group_chevron_rect, workspace_list_entries,
+        collapsed_sidebar_toggle_rect, compute_unified_rows, compute_workspace_card_areas,
+        expanded_sidebar_sections, expanded_sidebar_toggle_rect, normalized_unified_tree_scroll,
+        normalized_workspace_scroll, sidebar_section_divider_rect, unified_tree_active,
+        unified_tree_entries, unified_tree_scroll_for_cursor, workspace_drop_slots,
+        workspace_group_chevron_rect, workspace_has_agents, workspace_list_entries,
         workspace_list_entries_expanded, workspace_list_rect, workspace_list_scroll_metrics,
         workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelEntry,
         WorkspaceListEntry,
@@ -244,10 +246,19 @@ fn compute_view_internal(
         .unwrap_or((Rect::default(), main_area));
 
     if !app.sidebar_collapsed {
-        app.workspace_scroll = normalized_workspace_scroll(app, sidebar_area, app.workspace_scroll);
-        let (_, detail_area) = expanded_sidebar_sections(sidebar_area, app.sidebar_section_split);
-        let max_agent_scroll = agent_panel_scroll_metrics(app, detail_area).max_offset_from_bottom;
-        app.agent_panel_scroll = app.agent_panel_scroll.min(max_agent_scroll);
+        if unified_tree_active(app) {
+            app.workspace_scroll =
+                normalized_unified_tree_scroll(app, sidebar_area, app.workspace_scroll);
+            app.agent_panel_scroll = 0;
+        } else {
+            app.workspace_scroll =
+                normalized_workspace_scroll(app, sidebar_area, app.workspace_scroll);
+            let (_, detail_area) =
+                expanded_sidebar_sections(sidebar_area, app.sidebar_section_split);
+            let max_agent_scroll =
+                agent_panel_scroll_metrics(app, detail_area).max_offset_from_bottom;
+            app.agent_panel_scroll = app.agent_panel_scroll.min(max_agent_scroll);
+        }
     } else {
         app.workspace_scroll = app
             .workspace_scroll
@@ -255,8 +266,29 @@ fn compute_view_internal(
         app.agent_panel_scroll = 0;
     }
 
+    // In unified mode the tree owns layout; derive workspace card areas from the
+    // workspace rows so existing workspace hit-testing/selection keeps working.
+    let unified_rows = if !app.sidebar_collapsed && unified_tree_active(app) {
+        compute_unified_rows(app, sidebar_area)
+    } else {
+        Vec::new()
+    };
     let workspace_card_areas = if app.sidebar_collapsed {
         Vec::new()
+    } else if unified_tree_active(app) {
+        unified_rows
+            .iter()
+            .filter_map(|row| match row.kind {
+                crate::app::state::UnifiedRowKind::Workspace { ws_idx, indented } => {
+                    Some(crate::app::state::WorkspaceCardArea {
+                        ws_idx,
+                        rect: row.rect,
+                        indented,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     } else {
         compute_workspace_card_areas(app, sidebar_area)
     };
@@ -308,6 +340,7 @@ fn compute_view_internal(
         layout: ViewLayout::Desktop,
         sidebar_rect: sidebar_area,
         workspace_card_areas,
+        unified_rows,
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
         tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
@@ -371,6 +404,7 @@ fn compute_mobile_view(
         layout: ViewLayout::Mobile,
         sidebar_rect: Rect::default(),
         workspace_card_areas: Vec::new(),
+        unified_rows: Vec::new(),
         tab_bar_rect: Rect::default(),
         tab_hit_areas: Vec::new(),
         tab_scroll_left_hit_area: Rect::default(),
@@ -458,6 +492,35 @@ pub fn render_with_runtime_registry(
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
         Mode::Terminal => {}
+    }
+
+    // While the sidebar agent-nav cursor is engaged, dim the pane/tab area so it
+    // is obvious that focus is on the sidebar tree, not the terminal.
+    if app.sidebar_nav_cursor.is_some() && app.view.layout != ViewLayout::Mobile {
+        dim_rect(frame, terminal_area);
+        if tab_bar_area.height > 0 {
+            dim_rect(frame, tab_bar_area);
+        }
+    }
+}
+
+/// Apply a DIM modifier over every cell in `rect` (clamped to the frame),
+/// keeping symbols and colors so the content reads as "grayed out".
+fn dim_rect(frame: &mut Frame, rect: Rect) {
+    let bounds = frame.area();
+    let x_end = rect
+        .x
+        .saturating_add(rect.width)
+        .min(bounds.x + bounds.width);
+    let y_end = rect
+        .y
+        .saturating_add(rect.height)
+        .min(bounds.y + bounds.height);
+    let buf = frame.buffer_mut();
+    for y in rect.y..y_end {
+        for x in rect.x..x_end {
+            buf[(x, y)].set_style(Style::default().add_modifier(Modifier::DIM));
+        }
     }
 }
 

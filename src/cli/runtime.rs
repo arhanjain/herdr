@@ -49,6 +49,13 @@ pub(super) fn workspace_close(workspace_id: String) -> std::io::Result<i32> {
     )
 }
 
+pub(super) fn workspace_picker_open() -> std::io::Result<i32> {
+    print_method_response(
+        "cli:workspace:picker",
+        Method::WorkspacePickerOpen(EmptyParams::default()),
+    )
+}
+
 pub(super) fn tab_list(params: TabListParams) -> std::io::Result<i32> {
     print_method_response("cli:tab:list", Method::TabList(params))
 }

@@ -431,6 +431,9 @@ pub struct KeysConfig {
     pub cycle_pane_previous: BindingConfig,
     /// Focus the last focused pane across workspaces and tabs. Unset by default.
     pub last_pane: BindingConfig,
+    /// Enter keyboard navigation of the unified sidebar tree (j/k move, Enter
+    /// focuses, Esc exits). Only meaningful with sidebar_unified_tree.
+    pub sidebar_nav: BindingConfig,
     /// Split pane vertically (side by side). Default: "prefix+v"
     pub split_vertical: BindingConfig,
     /// Split pane horizontally (stacked). Default: "prefix+minus"
@@ -562,6 +565,7 @@ pub(crate) struct KeysConfigOverlay {
     cycle_pane_previous: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_pane: Option<BindingConfig>,
+    sidebar_nav: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     split_vertical: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -654,6 +658,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(cycle_pane_next);
         apply_field!(cycle_pane_previous);
         apply_field!(last_pane);
+        apply_field!(sidebar_nav);
         apply_field!(split_vertical);
         apply_field!(split_horizontal);
         apply_field!(close_pane);
@@ -758,6 +763,7 @@ impl KeysConfig {
         copy_effective_action_field!(cycle_pane_next, keybinds.cycle_pane_next);
         copy_effective_action_field!(cycle_pane_previous, keybinds.cycle_pane_previous);
         copy_effective_action_field!(last_pane, keybinds.last_pane);
+        copy_effective_action_field!(sidebar_nav, keybinds.sidebar_nav);
         copy_effective_action_field!(split_vertical, keybinds.split_vertical);
         copy_effective_action_field!(split_horizontal, keybinds.split_horizontal);
         copy_effective_action_field!(close_pane, keybinds.close_pane);
@@ -895,6 +901,19 @@ pub struct UiConfig {
     pub window_title: String,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
+    /// Render the agents panel as a tree, nesting each agent under a workspace
+    /// header with indentation and connector glyphs. Only takes effect when
+    /// `agent_panel_sort` is "spaces". Default: false.
+    pub agent_panel_tree: bool,
+    /// Merge the workspaces panel and the agents panel into a single full-height
+    /// tree: each workspace is a parent row with its agents nested beneath.
+    /// Replaces the two stacked panels while enabled. Default: false.
+    pub sidebar_unified_tree: bool,
+    /// Always ask the host terminal to report all keys (Kitty keyboard protocol)
+    /// so control keys like ctrl+h/j/l are disambiguated from Backspace/Enter and
+    /// can drive multiplexer bindings while a pane is focused. Requires a terminal
+    /// that supports the protocol (kitty, ghostty, wezterm, foot, …). Default: false.
+    pub keyboard_report_all_keys: bool,
     /// Retired setting that Herdr wrote before the workspace filter was removed.
     #[serde(rename = "agent_panel_scope")]
     _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
@@ -1059,6 +1078,7 @@ impl Default for KeysConfig {
             cycle_pane_next: BindingConfig::one("prefix+tab"),
             cycle_pane_previous: BindingConfig::one("prefix+shift+tab"),
             last_pane: BindingConfig::empty(),
+            sidebar_nav: BindingConfig::empty(),
             split_vertical: BindingConfig::one("prefix+v"),
             split_horizontal: BindingConfig::one("prefix+minus"),
             close_pane: BindingConfig::one("prefix+x"),
@@ -1113,6 +1133,9 @@ impl Default for UiConfig {
             tab_bar_right_separator: " ".into(),
             window_title: super::window_title::default_window_title(),
             agent_panel_sort: AgentPanelSortConfig::Spaces,
+            agent_panel_tree: false,
+            sidebar_unified_tree: false,
+            keyboard_report_all_keys: false,
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),

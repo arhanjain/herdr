@@ -563,6 +563,7 @@ impl App {
             worktree_remove: None,
             worktree_directory,
             collapsed_space_keys,
+            collapsed_agent_workspaces: Default::default(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -589,6 +590,7 @@ impl App {
                 layout: state::ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                unified_rows: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -629,6 +631,11 @@ impl App {
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_section_split,
             agent_panel_sort,
+            agent_panel_tree: config.ui.agent_panel_tree,
+            sidebar_unified_tree: config.ui.sidebar_unified_tree,
+            keyboard_report_all_keys: config.ui.keyboard_report_all_keys,
+            sidebar_nav_cursor: None,
+            sidebar_nav_return: None,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
@@ -1500,6 +1507,9 @@ impl App {
                 self.configure_window_title(&config.ui.window_title);
                 self.state.agent_panel_sort =
                     agent_panel_sort_from_config(config.ui.agent_panel_sort);
+                self.state.agent_panel_tree = config.ui.agent_panel_tree;
+                self.state.sidebar_unified_tree = config.ui.sidebar_unified_tree;
+                self.state.keyboard_report_all_keys = config.ui.keyboard_report_all_keys;
                 self.state.status_indicators = config.ui.status_indicators;
                 self.state.sidebar_agents = config.ui.sidebar.agents.clone();
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
@@ -1760,6 +1770,12 @@ impl App {
                     let key = self.input_leases.normalize_press(&lease_key, key);
                     match key.kind {
                         crossterm::event::KeyEventKind::Press => {
+                            // The unified-tree keyboard cursor intercepts input
+                            // before it reaches the focused pane or mode dispatch.
+                            if self.state.sidebar_nav_cursor.is_some() {
+                                self.handle_sidebar_nav_key(key.clone());
+                                continue;
+                            }
                             let initial_context = self.terminal_input_context();
                             let target = if initial_context.is_some() {
                                 self.handle_terminal_key_headless_from(source_id, key.clone())

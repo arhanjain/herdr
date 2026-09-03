@@ -608,6 +608,27 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
+/// A single laid-out row in the unified sidebar tree (workspaces + their agents
+/// in one full-height list). Used only when `sidebar_unified_tree` is enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnifiedRowKind {
+    Workspace {
+        ws_idx: usize,
+        indented: bool,
+    },
+    Agent {
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: crate::layout::PaneId,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnifiedRowArea {
+    pub rect: Rect,
+    pub kind: UnifiedRowKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -763,6 +784,9 @@ pub struct ViewState {
     pub layout: ViewLayout,
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    /// Laid-out rows for the unified sidebar tree; empty unless
+    /// `sidebar_unified_tree` is enabled. Rebuilt every frame in `compute_view`.
+    pub unified_rows: Vec<UnifiedRowArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1366,6 +1390,8 @@ pub struct AppState {
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    /// Workspace ids whose agent children are collapsed in the unified tree.
+    pub collapsed_agent_workspaces: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1414,6 +1440,18 @@ pub struct AppState {
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
     pub agent_panel_sort: AgentPanelSort,
+    /// Render the agents panel as a workspace-nested tree (spaces sort only).
+    pub agent_panel_tree: bool,
+    /// Merge the workspaces + agents panels into one full-height tree.
+    pub sidebar_unified_tree: bool,
+    /// Force the host terminal to report all keys so control keys reach bindings.
+    pub keyboard_report_all_keys: bool,
+    /// Active keyboard cursor into the unified tree (index into unified_tree
+    /// entries). Some(..) means sidebar keyboard navigation is engaged.
+    pub sidebar_nav_cursor: Option<usize>,
+    /// Pane focused when sidebar nav was entered, restored on Esc so live
+    /// preview-on-move can be cancelled. (workspace index, internal pane id)
+    pub sidebar_nav_return: Option<(usize, PaneId)>,
     pub status_indicators: crate::config::StatusIndicatorStyle,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
@@ -1728,6 +1766,7 @@ impl AppState {
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_workspaces: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -1745,6 +1784,7 @@ impl AppState {
                 layout: ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                unified_rows: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -1785,6 +1825,11 @@ impl AppState {
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
             agent_panel_sort: AgentPanelSort::Spaces,
+            agent_panel_tree: false,
+            sidebar_unified_tree: false,
+            keyboard_report_all_keys: false,
+            sidebar_nav_cursor: None,
+            sidebar_nav_return: None,
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),

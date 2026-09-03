@@ -76,6 +76,91 @@ impl AppState {
         );
     }
 
+    /// Scroll the unified tree (reuses `workspace_scroll`, clamped to the tree).
+    pub(super) fn scroll_unified_tree(&mut self, delta: i16) {
+        let area = self.view.sidebar_rect;
+        if delta.is_negative() {
+            self.workspace_scroll = self
+                .workspace_scroll
+                .saturating_sub(delta.unsigned_abs() as usize);
+        } else {
+            self.workspace_scroll = self.workspace_scroll.saturating_add(delta as usize);
+        }
+        self.workspace_scroll =
+            crate::ui::normalized_unified_tree_scroll(self, area, self.workspace_scroll);
+    }
+
+    /// Map a screen row to an agent leaf in the unified tree, if any.
+    pub(super) fn unified_agent_target_at(
+        &self,
+        row: u16,
+    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+        self.view
+            .unified_rows
+            .iter()
+            .find_map(|area| match area.kind {
+                crate::app::state::UnifiedRowKind::Agent {
+                    ws_idx,
+                    tab_idx,
+                    pane_id,
+                } if row >= area.rect.y && row < area.rect.y + area.rect.height => {
+                    Some((ws_idx, tab_idx, pane_id))
+                }
+                _ => None,
+            })
+    }
+
+    /// Engage keyboard navigation of the unified tree, placing the cursor on the
+    /// active pane's row (or the first row). No-op unless the unified tree is on.
+    pub(crate) fn enter_sidebar_nav(&mut self) {
+        if !crate::ui::unified_tree_active(self) {
+            return;
+        }
+        let entries = crate::ui::unified_tree_entries(self);
+        // The cursor lands only on agents; if there are none, do not engage.
+        let Some(start) = self.active_agent_row_index(&entries) else {
+            return;
+        };
+        // Remember the current focus so Esc can cancel the live preview.
+        self.sidebar_nav_return = self.active.and_then(|ws_idx| {
+            self.workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.focused_pane_id())
+                .map(|pane_id| (ws_idx, pane_id))
+        });
+        self.sidebar_nav_cursor = Some(start);
+        self.ensure_unified_row_visible(start);
+    }
+
+    /// Index of the agent row to start on: the active pane's agent if present,
+    /// otherwise the first agent. Returns None when there are no agent rows.
+    fn active_agent_row_index(
+        &self,
+        entries: &[crate::app::state::UnifiedRowKind],
+    ) -> Option<usize> {
+        use crate::app::state::UnifiedRowKind;
+        entries
+            .iter()
+            .position(|kind| {
+                matches!(
+                    kind,
+                    UnifiedRowKind::Agent { ws_idx, tab_idx, pane_id }
+                        if self.is_active_pane(*ws_idx, *tab_idx, *pane_id)
+                )
+            })
+            .or_else(|| {
+                entries
+                    .iter()
+                    .position(|kind| matches!(kind, UnifiedRowKind::Agent { .. }))
+            })
+    }
+
+    /// Adjust the unified-tree scroll so cursor entry `idx` stays visible.
+    pub(crate) fn ensure_unified_row_visible(&mut self, idx: usize) {
+        let area = self.view.sidebar_rect;
+        self.workspace_scroll = crate::ui::unified_tree_scroll_for_cursor(self, area, idx);
+    }
+
     pub(super) fn scroll_workspace_list(&mut self, delta: i16) {
         if delta.is_negative() {
             self.workspace_scroll = self
@@ -505,7 +590,7 @@ impl AppState {
         let entries = crate::ui::agent_panel_entries(self);
         let scroll = self.agent_panel_scroll.min(metrics.max_offset_from_bottom);
         for (index, detail) in entries.iter().enumerate().skip(scroll) {
-            let height = crate::ui::agent_entry_height_in_body(self, detail, body.height);
+            let height = crate::ui::agent_entry_height_in_body(self, &entries, index, body.height);
             if row_y.saturating_add(height) > body_bottom {
                 break;
             }

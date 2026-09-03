@@ -5,7 +5,7 @@ use crate::api::schema::{
     WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
     WorkspaceReportMetadataParams, WorkspaceTarget,
 };
-use crate::app::App;
+use crate::app::{App, Mode};
 
 use super::super::api_helpers::{normalize_metadata_source, normalize_metadata_ttl};
 use super::responses::{encode_error, encode_success};
@@ -330,6 +330,46 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    /// Move keyboard focus off the panes and onto the workspace picker.
+    ///
+    /// Lets an outside navigation binding treat the picker as the next stop past
+    /// the leftmost pane, which the keybinding path cannot do once a custom
+    /// command owns the key in `Mode::Terminal`.
+    pub(super) fn handle_workspace_picker_open(&mut self, id: String) -> String {
+        if self.state.mode != Mode::Terminal {
+            return encode_error(
+                id,
+                "invalid_request",
+                "workspace.picker_open requires terminal focus",
+            );
+        }
+        let Some(active) = self.state.active else {
+            return encode_error(
+                id,
+                "invalid_request",
+                "workspace.picker_open requires an active workspace",
+            );
+        };
+
+        // Prefer the unified tree's keyboard cursor: it lands on agent rows, live
+        // previews each one, and restores the previous focus if cancelled. It only
+        // engages when the tree view is on and has at least one agent row, so fall
+        // back to selecting in the workspace picker when it declines.
+        self.state.enter_sidebar_nav();
+        if self.state.sidebar_nav_cursor.is_none() {
+            self.state.selected = active;
+            self.state.mobile_switcher_scroll = 0;
+            self.state.mode = Mode::Navigate;
+        }
+
+        encode_success(
+            id,
+            ResponseResult::WorkspaceInfo {
+                workspace: self.workspace_info(active),
+            },
+        )
+    }
+
     fn workspace_list_info(&self) -> Vec<crate::api::schema::WorkspaceInfo> {
         self.state
             .workspaces
@@ -503,6 +543,79 @@ mod tests {
                         .is_some_and(|worktree| worktree.is_linked_worktree)
             )
         }));
+    }
+
+    #[test]
+    fn api_workspace_picker_open_selects_active_workspace() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state.active = Some(1);
+        app.state.selected = 0;
+        app.state.mobile_switcher_scroll = 4;
+        app.state.mode = Mode::Terminal;
+
+        let response = app.handle_workspace_picker_open("req".into());
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "req");
+        assert!(matches!(
+            success.result,
+            ResponseResult::WorkspaceInfo { .. }
+        ));
+        assert_eq!(app.state.mode, Mode::Navigate);
+        assert_eq!(app.state.selected, 1);
+        assert_eq!(app.state.mobile_switcher_scroll, 0);
+    }
+
+    // An open modal owns the keyboard; stealing focus from it would leave the
+    // caller in a mode the user did not ask for.
+    #[test]
+    fn api_workspace_picker_open_refuses_outside_terminal_mode() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.mode = Mode::Navigator;
+
+        let response = app.handle_workspace_picker_open("req".into());
+
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "invalid_request");
+        assert_eq!(app.state.mode, Mode::Navigator);
+    }
+
+    #[test]
+    fn api_workspace_picker_open_refuses_without_active_workspace() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces.clear();
+        app.state.active = None;
+        app.state.mode = Mode::Terminal;
+
+        let response = app.handle_workspace_picker_open("req".into());
+
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "invalid_request");
+        assert_eq!(app.state.mode, Mode::Terminal);
     }
 
     #[test]

@@ -90,6 +90,12 @@ impl App {
             return None;
         }
 
+        // Unified-tree keyboard cursor intercepts all keys while engaged.
+        if self.state.sidebar_nav_cursor.is_some() {
+            self.handle_sidebar_nav_key(key);
+            return None;
+        }
+
         match self.state.mode {
             Mode::Terminal => return self.handle_terminal_key(key).await,
             Mode::Prefix => self.handle_prefix_key(key),
@@ -868,6 +874,154 @@ fn root_layout_ratio(snapshot: &crate::persist::SessionSnapshot) -> Option<f32> 
         crate::persist::LayoutSnapshot::Split { ratio, .. } => Some(*ratio),
         crate::persist::LayoutSnapshot::Pane(_) => None,
     }
+}
+
+#[cfg(test)]
+#[test]
+fn sidebar_nav_cursor_moves_with_jk_and_enter_clears_it() {
+    let mut app = app_for_mouse_test();
+    app.state.workspaces = vec![
+        crate::workspace::Workspace::test_new("alpha"),
+        crate::workspace::Workspace::test_new("beta"),
+    ];
+    app.state.ensure_test_terminals();
+    for ws_idx in 0..2 {
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .detected_agent = Some(crate::detect::Agent::Claude);
+    }
+    app.state.active = Some(0);
+    app.state.sidebar_unified_tree = true;
+
+    let is_agent_row = |app: &App, idx: usize| {
+        matches!(
+            crate::ui::unified_tree_entries(&app.state).get(idx),
+            Some(crate::app::state::UnifiedRowKind::Agent { .. })
+        )
+    };
+
+    app.state.enter_sidebar_nav();
+    let start = app
+        .state
+        .sidebar_nav_cursor
+        .expect("cursor engaged in unified mode");
+    assert!(
+        is_agent_row(&app, start),
+        "cursor must start on an agent row"
+    );
+
+    // j keeps the cursor engaged, moves it downward, and lands on another agent.
+    app.handle_sidebar_nav_key(TerminalKey::new(
+        crossterm::event::KeyCode::Char('j'),
+        crossterm::event::KeyModifiers::empty(),
+    ));
+    let moved = app
+        .state
+        .sidebar_nav_cursor
+        .expect("cursor still engaged after j");
+    assert!(moved > start, "j advanced to the next agent");
+    assert!(is_agent_row(&app, moved), "cursor stays on agent rows only");
+
+    // Enter commits the selection and disengages the cursor.
+    app.handle_sidebar_nav_key(TerminalKey::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::empty(),
+    ));
+    assert_eq!(app.state.sidebar_nav_cursor, None);
+}
+
+#[cfg(test)]
+#[test]
+fn sidebar_nav_continues_the_ctrl_hjkl_chain() {
+    let mut app = app_for_mouse_test();
+    app.state.workspaces = vec![
+        crate::workspace::Workspace::test_new("alpha"),
+        crate::workspace::Workspace::test_new("beta"),
+    ];
+    app.state.ensure_test_terminals();
+    for ws_idx in 0..2 {
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .detected_agent = Some(crate::detect::Agent::Claude);
+    }
+    app.state.active = Some(0);
+    app.state.sidebar_unified_tree = true;
+
+    let ctrl = |code| TerminalKey::new(code, crossterm::event::KeyModifiers::CONTROL);
+
+    app.state.enter_sidebar_nav();
+    let start = app
+        .state
+        .sidebar_nav_cursor
+        .expect("cursor engaged in unified mode");
+
+    // ctrl+j moves the cursor just like plain j, so the outer chain keeps working
+    // once the host terminal passes the modified key through.
+    app.handle_sidebar_nav_key(ctrl(crossterm::event::KeyCode::Char('j')));
+    let moved = app
+        .state
+        .sidebar_nav_cursor
+        .expect("cursor still engaged after ctrl+j");
+    assert!(moved > start, "ctrl+j advanced to the next agent");
+
+    // The tree is the far left end of the chain, so ctrl+h has nowhere to go and
+    // must not disengage the cursor or move it.
+    app.handle_sidebar_nav_key(ctrl(crossterm::event::KeyCode::Char('h')));
+    assert_eq!(
+        app.state.sidebar_nav_cursor,
+        Some(moved),
+        "ctrl+h stays put at the left edge of the chain"
+    );
+
+    // ctrl+l steps back out into the panes, committing like Enter.
+    app.handle_sidebar_nav_key(ctrl(crossterm::event::KeyCode::Char('l')));
+    assert_eq!(app.state.sidebar_nav_cursor, None);
+    assert_eq!(app.state.sidebar_nav_return, None);
+    assert_eq!(app.state.mode, Mode::Terminal);
+}
+
+#[cfg(test)]
+#[test]
+fn left_click_cancels_engaged_sidebar_nav() {
+    let mut app = app_for_mouse_test();
+    app.state.sidebar_nav_cursor = Some(0);
+    app.state.sidebar_nav_return = Some((0, crate::layout::PaneId::from_raw(1)));
+    let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+    let _ = app.state.handle_mouse(
+        &mut runtimes,
+        mouse(MouseEventKind::Down(MouseButton::Left), 0, 0),
+    );
+
+    assert_eq!(app.state.sidebar_nav_cursor, None);
+    assert_eq!(app.state.sidebar_nav_return, None);
+}
+
+#[cfg(test)]
+#[test]
+fn keyboard_report_all_keys_forces_host_reporting_in_terminal_mode() {
+    let mut app = app_for_mouse_test();
+    app.state.mode = Mode::Terminal;
+
+    // Off by default: with no focused runtime, terminal mode does not request it.
+    app.state.keyboard_report_all_keys = false;
+    assert!(!app.host_keyboard_report_all_requested());
+
+    // On: host reporting is forced regardless of mode/pane.
+    app.state.keyboard_report_all_keys = true;
+    assert!(app.host_keyboard_report_all_requested());
 }
 
 #[cfg(test)]

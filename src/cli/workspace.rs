@@ -18,6 +18,7 @@ pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
         "rename" => workspace_rename(&args[1..]),
         "report-metadata" => workspace_report_metadata(&args[1..]),
         "close" => workspace_close(&args[1..]),
+        "picker" => workspace_picker(&args[1..]),
         "help" | "--help" | "-h" => {
             print_workspace_help();
             Ok(0)
@@ -237,6 +238,15 @@ fn workspace_close(args: &[String]) -> std::io::Result<i32> {
     super::runtime::workspace_close(super::normalize_workspace_id(raw_workspace_id))
 }
 
+fn workspace_picker(args: &[String]) -> std::io::Result<i32> {
+    if !args.is_empty() {
+        eprintln!("usage: herdr workspace picker");
+        return Ok(2);
+    }
+
+    super::runtime::workspace_picker_open()
+}
+
 fn print_workspace_help() {
     eprintln!("herdr workspace commands:");
     eprintln!("  herdr workspace list");
@@ -246,4 +256,5 @@ fn print_workspace_help() {
     eprintln!("  herdr workspace rename <workspace_id> <label>");
     eprintln!("  herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr workspace close <workspace_id>");
+    eprintln!("  herdr workspace picker");
 }
